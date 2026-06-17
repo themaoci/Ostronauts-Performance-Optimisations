@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+release/*.zip
+release/*.pdb
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# OS
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Game-specific local paths
+*.log
