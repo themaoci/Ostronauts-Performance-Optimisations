@@ -192,7 +192,7 @@ namespace OstronautsPerfOpt
                 }
             }
 
-            Log.LogInfo($"=== PerfOpt v4.3.0 ({ok}/{patches.Length} patches) ===");
+            Log.LogInfo($"=== PerfOpt v4.4.0 ({ok}/{patches.Length} patches) ===");
             Log.LogInfo("  All optimizations hardcoded ON. No config.");
         }
 
