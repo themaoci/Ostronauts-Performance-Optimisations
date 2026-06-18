@@ -35,6 +35,10 @@
       <HintPath>$(GameDir)\Ostranauts_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(GameDir)\Ostranauts_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.UIModule">
       <HintPath>$(GameDir)\Ostranauts_Data\Managed\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
