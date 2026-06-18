@@ -154,12 +154,37 @@ No configuration file is generated. Every optimization is hardcoded on.
 dotnet build -c Release OstronautsPerfOpt.csproj
 ```
 
-The `Deploy` MSBuild target copies the DLL to the default Steam install path.
-Override with:
+The `Deploy` MSBuild target copies the DLL to the Steam install path. By
+default it targets the standard Steam location:
+
+```
+C:\Program Files (x86)\Steam\steamapps\common\Ostranauts
+```
+
+### Non-default game location
+
+If your Ostranauts install lives elsewhere (different drive, Steam library
+folder, or a manual install), override `GameDir` with the **absolute path**
+to the Ostranauts root (the folder containing `Ostranauts.exe` and
+`Ostranauts_Data\`):
 
 ```bash
-dotnet build -c Release /p:GameDir="D:\Games\Ostranauts"
+dotnet build -c Release /p:GameDir="D:\SteamLibrary\steamapps\common\Ostranauts"
 ```
+
+```bash
+dotnet build -c Release /p:GameDir="E:\Games\Ostranauts"
+```
+
+To find your install path: in Steam, right-click **Ostranauts → Manage →
+Browse local files**. The folder Steam opens is the value to pass to
+`GameDir`. Note that `GameDir` must point at the Ostranauts root, **not** at
+`BepInEx\plugins\` — the build target appends `BepInEx\plugins\` itself.
+
+If you prefer to deploy manually (or are building on a machine without the
+game installed), set `GameDir` to any writable folder and copy the resulting
+`bin\Release\netstandard2.1\OstronautsPerfOpt.dll` into
+`<Ostranauts>\BepInEx\plugins\` yourself.
 
 > The deploy step will fail if the game is running — BepInEx keeps the DLL
 > memory-mapped. Close the game before rebuilding.
