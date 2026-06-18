@@ -9,3 +9,5 @@
 **Root cause:** The `if (flag) ResetTensionTimer();` guard at lines 330–333 means a "no event fired" tick leaves the timer expired; `Update` then re-enters `GenerateTension` on the next tick because `fTensionRemain < 0.0` is still true, creating an inadvertent per-frame hot path out of what should be a 9-minute timer.
 
 **Fix:** Always call `ResetTensionTimer()` at the end of `GenerateTension` (move it out of the `if (flag)` block), matching the pattern already used by `GenerateRelease` at line 373.
+
+**Mod patch:** `Patch_DebugLog_Suppress` suppresses the `Debug.Log` spam from the per-frame re-entry (reducing the perf cost), but the underlying logic bug — `GenerateTension` running every frame — is not patched.

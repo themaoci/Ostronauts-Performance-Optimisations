@@ -11,3 +11,5 @@
 **Root cause:** `Update()` runs on every spawned inventory item (potentially dozens), and the `CO` getter performs lookups every frame; `Debug.Log` on destroy fires for every trashed/moved item.
 
 **Fix:** Guard `Update()` with an early return when not selected and `_isMouseOverUI` is false (cache the `CO` reference on spawn instead of re-resolving), and remove the `Debug.Log("Destroying " + CO.strName)` line or wrap it in `#if UNITY_EDITOR`.
+
+**Mod patch:** `Patch_DebugLog_Suppress` suppresses the `Debug.Log` on destroy. The per-frame `CO` getter dict lookups are not yet patched.

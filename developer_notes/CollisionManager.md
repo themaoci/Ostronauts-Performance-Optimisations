@@ -17,3 +17,5 @@
 **Issue:** `Debug.Log` with string concatenation runs in the projectile-collision hot path (called per-tick from `StarSystem.Update`); these execute even in release builds and allocate strings on every hit/miss.
 
 **Fix:** Guard with `if (AIShipManager.ShowDebugLogs)` (already used elsewhere in the same file, e.g. lines 597, 880) so the `Debug.Log` and its string concatenation only execute when explicitly enabled.
+
+**Mod patches:** `Patch_CollisionManager_ToList` replaces both `.ToList()` calls with reusable buffers. `Patch_DebugLog_Suppress` suppresses the `Debug.Log` info spam; `Patch_DebugLogWarning_Passthrough` / `Patch_DebugLogError_Passthrough` re-emit warnings/errors through BepInEx.

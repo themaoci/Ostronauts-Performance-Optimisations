@@ -16,3 +16,5 @@
 - Add an `IsMouseOverCO(...)` overload that uses the non-allocating single-hit `Physics.Raycast` (with a reusable `RaycastHit` buffer) and returns true on the first valid `CondOwner`.
 - Replace `aTickers.FirstOrDefault()` with `var first = aTickers.Count > 0 ? aTickers[0] : null;` and reuse `first` in both the condition and body.
 - Cache the `Canvas` reference once in `Awake`/`OnEnable` and read `scaleFactor` from the cached field.
+
+**Mod patch:** `Patch_CrewSim_CacheComponents` caches the `Canvas.scaleFactor` and `Audio_VacuumController` lookups (issue #3 above). The `GetMouseOverCO` raycast/LINQ (#1) and `aTickers.FirstOrDefault()` (#2) issues are not yet patched.

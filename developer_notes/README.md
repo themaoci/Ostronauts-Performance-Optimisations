@@ -4,6 +4,11 @@ One file per source file in the shipped `Assembly-CSharp.dll`. Each note documen
 
 Notes are organized by source filename. Files from subfolders are prefixed with the namespace path.
 
+**Mod patch cross-references:** Notes for bugs already mitigated by this mod's
+Harmony patches include a `**Mod patch:**` line at the end, naming the patch
+and noting what is covered vs. what remains unpatched. Bugs without that line
+are unmitigated — candidate targets for future patches or upstream fixes.
+
 ## Index
 
 ### Core simulation

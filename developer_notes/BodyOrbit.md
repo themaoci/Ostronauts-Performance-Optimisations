@@ -9,3 +9,5 @@
 **Root cause:** No cached depth or parent-chain summary on `BodyOrbit`; the full parent walk is repeated every sim tick.
 
 **Fix:** Cache `nDepth` (and optionally the root-to-body chain) as a field on `BodyOrbit`, recomputed only when `boParent` changes (e.g. in a `SetParent` method). `UpdateTime` then reads the cached depth for any hierarchical math.
+
+**Mod patch:** `Patch_StarSystemUpdate` caches depth per-body in a `Dictionary<BodyOrbit, int>` for topological batching of the parallel `UpdateTime` calls. The vanilla `UpdateTime` method itself still recomputes the parent chain each tick.

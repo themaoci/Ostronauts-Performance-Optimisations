@@ -25,3 +25,5 @@
 **Issue:** `.ToList()` on the `Directory.GetFiles` result is unnecessary since it's already an array and is only iterated once.
 
 **Fix:** Remove the `.ToList()` call.
+
+**Mod patches:** `Patch_SaveScreenShot_Skip` and `Patch_SaveCrewPortraits_Skip` skip the synchronous `RenderTexture` capture entirely (addressing the perf cost, not the `targetTexture` leak). `Patch_SaveGame_Threaded` forces `useThreading=true` for all saves. The sync `File.ReadAllBytes` on main thread and `GetSaveInfos` alloc churn are not yet patched.

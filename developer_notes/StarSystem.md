@@ -17,3 +17,5 @@
 **Issue:** Two more `ToList()` calls in methods that run on the per-frame hot path.
 
 **Fix:** Iterate the underlying collections directly, or use reusable field buffers cleared per call.
+
+**Mod patch:** `Patch_StarSystemUpdate_ToList` replaces the `Update` `.ToList()` with a reusable `List<Ship>` buffer. The lines 1047 and 1066 `ToList()` calls are not yet patched.

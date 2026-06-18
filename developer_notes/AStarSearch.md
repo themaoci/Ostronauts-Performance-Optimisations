@@ -11,3 +11,5 @@
 **Root cause:** The loop `for (int i = 0; i < 3333; i++)` uses an arbitrary fixed cap that silently fails on large or complex ships; `Debug.Log(coUs.strName + " pathfinder searched " + i + " tiles.")` fires whenever > 1511 tiles are searched, which is common on large ships.
 
 **Fix:** Replace the fixed cap with a configurable max based on ship size (e.g., `coUs.ship.aTiles.Count * 4`), and remove or downgrade the `Debug.Log` to a one-shot warning.
+
+**Mod patch:** `Patch_DebugLog_Suppress` suppresses the `Debug.Log` output. The hardcoded `3333` iteration cap is not yet patched.
