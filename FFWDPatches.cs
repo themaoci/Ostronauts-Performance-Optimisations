@@ -11,34 +11,14 @@ namespace OstronautsPerfOpt
     // ========================================
     // During time acceleration (Time.timeScale up to 16x), CrewSim.Update
     // runs every frame with a large deltaTime. StarSystem.UpdateShip runs
-    // per ship per frame, calling Ship.UpdateCrewSkills() which iterates
-    // GetPeople() and checks HasCond for every crew member.
-    // UpdateCrewSkills only changes outputs when crew skills change (rare
-    // — happens on level-up, role change, or unconsciousness). Throttling
-    // to once per ~5 sim seconds during time accel cuts 16x per-second
-    // cost to ~3x with zero gameplay impact during travel.
-
-    [HarmonyPatch]
-    public static class Patch_UpdateCrewSkills_Throttle
-    {
-        static MethodBase TargetMethod()
-        {
-            return AccessTools.Method(typeof(Ship), "UpdateCrewSkills");
-        }
-
-        private static double _lastRunEpoch = double.MinValue;
-
-        static bool Prefix(Ship __instance)
-        {
-            double epoch = StarSystem.fEpoch;
-            if (Time.timeScale > 1f && _lastRunEpoch > double.MinValue
-                && epoch - _lastRunEpoch < 5.0)
-            {
-                return false;
-            }
-            _lastRunEpoch = epoch;
-            return true;
-        }
-    }
-
+    // per ship per frame, calling Ship.Sparks() which spawns particle
+    // effects that are invisible during fast-forward travel.
+    //
+    // Note: UpdateCrewSkills sets STATIC fields (WeaponsSystem.fRangeModGunner,
+    // fFuelEfficiencyMod) that reflect per-ship crew state. Throttling it
+    // per-ship with a shared static timestamp would corrupt these values
+    // (only one ship per frame would update the static). So we do NOT
+    // throttle it — the Sparks skip below is the only time-accel visual
+    // optimization. UpdateCrewSkills is cheap enough (HasCond checks) to
+    // leave alone.
 }
