@@ -73,6 +73,9 @@ namespace OstronautsPerfOpt
             if (!PerfOptPlugin.CfgInteractionCache)
                 return true;
 
+            if (!PerfOptPlugin.GameLoaded)
+                return true;
+
             if (strName == null)
             {
                 __result = null;
@@ -110,8 +113,6 @@ namespace OstronautsPerfOpt
             AccessTools.Field(typeof(CrewSim), "aTickers");
         private static readonly FieldInfo _fLastCleanupField =
             AccessTools.Field(typeof(CondOwner), "fLastCleanup");
-        private static readonly MethodInfo _updateStatsMethod =
-            AccessTools.Method(typeof(CondOwner), "UpdateStats");
         private static CrewSim _cachedCrewSim;
         private static int _cachedCrewSimFrame = -1;
         private static readonly List<CondOwner> _coBuffer = new List<CondOwner>(256);
@@ -119,11 +120,7 @@ namespace OstronautsPerfOpt
         static void Prefix()
         {
             if (!PerfOptPlugin.GameLoaded) return;
-
-            bool doStats = PerfOptPlugin.CfgParallelUpdateStats
-                && PerfOptPlugin.CfgVisualDeferral;
-            bool doCleanup = PerfOptPlugin.CfgParallelCleanupExpiry;
-            if (!doStats && !doCleanup) return;
+            if (!PerfOptPlugin.CfgParallelCleanupExpiry) return;
 
             int fc = Time.frameCount;
             CrewSim instance = _cachedCrewSim;
@@ -157,47 +154,19 @@ namespace OstronautsPerfOpt
 
             double epoch = StarSystem.fEpoch;
 
-            if (doStats && doCleanup)
+            PerfOptPlugin.RunParallelOrSafe(_coBuffer, co =>
             {
-                PerfOptPlugin.RunParallelOrSafe(_coBuffer, co =>
+                try
                 {
-                    try
+                    if (_fLastCleanupField != null)
                     {
-                        _updateStatsMethod.Invoke(co, null);
-                        if (_fLastCleanupField != null)
-                        {
-                            double lastCleanup = (double)_fLastCleanupField.GetValue(co);
-                            if (epoch - lastCleanup > 2.0)
-                                Patch_CleanupExpire.RunExpireOnly(co);
-                        }
+                        double lastCleanup = (double)_fLastCleanupField.GetValue(co);
+                        if (epoch - lastCleanup > 2.0)
+                            Patch_CleanupExpire.RunExpireOnly(co);
                     }
-                    catch { }
-                }, minBatch);
-            }
-            else if (doStats)
-            {
-                PerfOptPlugin.RunParallelOrSafe(_coBuffer, co =>
-                {
-                    try { _updateStatsMethod.Invoke(co, null); }
-                    catch { }
-                }, minBatch);
-            }
-            else if (doCleanup)
-            {
-                PerfOptPlugin.RunParallelOrSafe(_coBuffer, co =>
-                {
-                    try
-                    {
-                        if (_fLastCleanupField != null)
-                        {
-                            double lastCleanup = (double)_fLastCleanupField.GetValue(co);
-                            if (epoch - lastCleanup > 2.0)
-                                Patch_CleanupExpire.RunExpireOnly(co);
-                        }
-                    }
-                    catch { }
-                }, minBatch);
-            }
+                }
+                catch { }
+            }, minBatch);
         }
     }
 
@@ -215,12 +184,62 @@ namespace OstronautsPerfOpt
         [ThreadStatic]
         private static List<string> _tlsKeysBuffer;
 
+        [ThreadStatic]
+        private static List<string> _tlsKeysSnapshot;
+
         private static List<string> GetKeysBuffer()
         {
             if (_tlsKeysBuffer == null)
                 _tlsKeysBuffer = new List<string>(32);
             _tlsKeysBuffer.Clear();
             return _tlsKeysBuffer;
+        }
+
+        private static List<string> GetKeysSnapshot(IEnumerable<string> keys)
+        {
+            var buf = _tlsKeysSnapshot;
+            if (buf == null)
+            {
+                buf = new List<string>(32);
+                _tlsKeysSnapshot = buf;
+            }
+            buf.Clear();
+            if (keys != null)
+            {
+                foreach (var k in keys)
+                    buf.Add(k);
+            }
+            return buf;
+        }
+
+        static IEnumerable<CodeInstruction> Transpiler(
+            IEnumerable<CodeInstruction> instructions)
+        {
+            var codes = new List<CodeInstruction>(instructions);
+            var snapshotMethod = AccessTools.Method(
+                typeof(Patch_CleanupExpire), "GetKeysSnapshot");
+
+            int patchCount = 0;
+            for (int i = 0; i < codes.Count; i++)
+            {
+                if (codes[i].opcode == OpCodes.Newobj &&
+                    codes[i].operand is ConstructorInfo ctor &&
+                    ctor.DeclaringType == typeof(List<string>) &&
+                    ctor.GetParameters().Length == 1)
+                {
+                    codes[i] = new CodeInstruction(OpCodes.Call, snapshotMethod);
+                    patchCount++;
+                }
+            }
+
+            if (patchCount > 0)
+                PerfOptPlugin.Log.LogInfo(
+                    $"[GC-CLEANUP] CondOwner.Cleanup: replaced {patchCount} new List<string>(Keys) with reusable TLS buffer");
+            else
+                PerfOptPlugin.Log.LogInfo(
+                    "[GC-CLEANUP] CondOwner.Cleanup: no List<string>(IEnumerable) ctor found in IL");
+
+            return codes;
         }
 
         public static void RunExpireOnly(CondOwner co)

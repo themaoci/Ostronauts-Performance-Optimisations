@@ -95,9 +95,17 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(CondOwner), "EndTurn");
         }
 
+        private static long _memBefore;
+        private static int _gcBefore;
+
         static void Prefix(ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
+            if (PerfOptPlugin.IsProfiling)
+            {
+                _memBefore = GC.GetTotalMemory(false);
+                _gcBefore = GC.CollectionCount(0);
+            }
         }
 
         static void Postfix(long __state)
@@ -108,6 +116,12 @@ namespace OstronautsPerfOpt
             float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
             if (Ms > 20f)
                 PerfOptPlugin.Log.LogInfo("[SIM-DIAG] EndTurn " + Ms.ToString("F1") + "ms");
+
+            if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
+            {
+                long d = GC.GetTotalMemory(false) - _memBefore;
+                if (d > 0) PerfOptPlugin.AllocEndTurn += d;
+            }
         }
     }
 
@@ -119,9 +133,17 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(CondOwner), "GetMove2");
         }
 
+        private static long _memBefore;
+        private static int _gcBefore;
+
         static void Prefix(ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
+            if (PerfOptPlugin.IsProfiling)
+            {
+                _memBefore = GC.GetTotalMemory(false);
+                _gcBefore = GC.CollectionCount(0);
+            }
         }
 
         static void Postfix(long __state)
@@ -132,6 +154,12 @@ namespace OstronautsPerfOpt
             float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
             if (Ms > 20f)
                 PerfOptPlugin.Log.LogInfo("[SIM-DIAG] GetMove2 " + Ms.ToString("F1") + "ms");
+
+            if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
+            {
+                long d = GC.GetTotalMemory(false) - _memBefore;
+                if (d > 0) PerfOptPlugin.AllocGetMove2 += d;
+            }
         }
     }
 
@@ -143,9 +171,17 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(CondOwner), "GetWork");
         }
 
+        private static long _memBefore;
+        private static int _gcBefore;
+
         static void Prefix(object __instance, ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
+            if (PerfOptPlugin.IsProfiling)
+            {
+                _memBefore = GC.GetTotalMemory(false);
+                _gcBefore = GC.CollectionCount(0);
+            }
         }
 
         static void Postfix(object __instance, long __state)
@@ -160,6 +196,12 @@ namespace OstronautsPerfOpt
             {
                 PerfOptPlugin.Log.LogWarning("[SIM-DIAG] GetWork " + Ms.ToString("F1") + "ms " + (__instance != null ? __instance.GetType().Name : "null"));
             }
+
+            if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
+            {
+                long d = GC.GetTotalMemory(false) - _memBefore;
+                if (d > 0) PerfOptPlugin.AllocGetWork += d;
+            }
         }
     }
 
@@ -172,9 +214,17 @@ namespace OstronautsPerfOpt
                 new Type[] { typeof(string), typeof(double) });
         }
 
+        private static long _memBefore;
+        private static int _gcBefore;
+
         static void Prefix(ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
+            if (PerfOptPlugin.IsProfiling)
+            {
+                _memBefore = GC.GetTotalMemory(false);
+                _gcBefore = GC.CollectionCount(0);
+            }
         }
 
         static void Postfix(long __state)
@@ -182,6 +232,12 @@ namespace OstronautsPerfOpt
             if (!PerfOptPlugin.IsProfiling) return;
             PerfOptPlugin.TParseCL += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CParseCL++;
+
+            if (GC.CollectionCount(0) == _gcBefore)
+            {
+                long d = GC.GetTotalMemory(false) - _memBefore;
+                if (d > 0) PerfOptPlugin.AllocParseCL += d;
+            }
         }
     }
 
@@ -193,9 +249,17 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(CondOwner), "Cleanup");
         }
 
+        private static long _memBefore;
+        private static int _gcBefore;
+
         static void Prefix(ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
+            if (PerfOptPlugin.IsProfiling)
+            {
+                _memBefore = GC.GetTotalMemory(false);
+                _gcBefore = GC.CollectionCount(0);
+            }
         }
 
         static void Postfix(long __state)
@@ -203,6 +267,12 @@ namespace OstronautsPerfOpt
             if (!PerfOptPlugin.IsProfiling) return;
             PerfOptPlugin.TCleanup += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CCleanup++;
+
+            if (GC.CollectionCount(0) == _gcBefore)
+            {
+                long d = GC.GetTotalMemory(false) - _memBefore;
+                if (d > 0) PerfOptPlugin.AllocCleanup += d;
+            }
         }
     }
 
@@ -214,9 +284,17 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(CondOwner), "UpdateStats");
         }
 
+        private static long _memBefore;
+        private static int _gcBefore;
+
         static void Prefix(ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
+            if (PerfOptPlugin.IsProfiling)
+            {
+                _memBefore = GC.GetTotalMemory(false);
+                _gcBefore = GC.CollectionCount(0);
+            }
         }
 
         static void Postfix(long __state)
@@ -224,6 +302,12 @@ namespace OstronautsPerfOpt
             if (!PerfOptPlugin.IsProfiling) return;
             PerfOptPlugin.TUpdateStats += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CUpdateStats++;
+
+            if (GC.CollectionCount(0) == _gcBefore)
+            {
+                long d = GC.GetTotalMemory(false) - _memBefore;
+                if (d > 0) PerfOptPlugin.AllocUpdateStats += d;
+            }
         }
     }
 
@@ -237,6 +321,10 @@ namespace OstronautsPerfOpt
 
         private static readonly FieldInfo _aBOsField =
             AccessTools.Field(typeof(StarSystem), "aBOs");
+
+        private static BodyOrbit[] _orbitBuffer = new BodyOrbit[64];
+        private static List<List<BodyOrbit>> _byDepthBuffer = new List<List<BodyOrbit>>(4);
+        private static Dictionary<BodyOrbit, int> _depthMap = new Dictionary<BodyOrbit, int>(64);
 
         private static long _memBefore;
         private static int _gcBefore;
@@ -268,7 +356,10 @@ namespace OstronautsPerfOpt
                     if (aBOs != null && aBOs.Count > 0)
                     {
                         double epoch = StarSystem.fEpoch;
-                        var orbits = new BodyOrbit[aBOs.Count];
+
+                        if (_orbitBuffer.Length < aBOs.Count)
+                            _orbitBuffer = new BodyOrbit[aBOs.Count + 8];
+                        var orbits = _orbitBuffer;
                         int idx = 0;
                         foreach (DictionaryEntry entry in aBOs)
                         {
@@ -281,31 +372,37 @@ namespace OstronautsPerfOpt
                             long ts = Stopwatch.GetTimestamp();
                             PerfOptPlugin.ParallelBatchesRun++;
 
-                            // Build depth levels so parents process before children
-                            var byDepth = new List<List<BodyOrbit>>();
-                            var depth = new Dictionary<BodyOrbit, int>();
+                            _depthMap.Clear();
+                            for (int i = 0; i < _byDepthBuffer.Count; i++)
+                                _byDepthBuffer[i].Clear();
+
                             for (int i = 0; i < idx; i++)
                             {
                                 var bo = orbits[i];
-                                if (!depth.TryGetValue(bo, out var d))
+                                int d;
+                                if (!_depthMap.TryGetValue(bo, out d))
                                 {
                                     d = 0;
                                     var p = bo.boParent;
                                     while (p != null) { d++; p = p.boParent; }
-                                    depth[bo] = d;
+                                    _depthMap[bo] = d;
                                 }
-                                while (byDepth.Count <= d)
-                                    byDepth.Add(new List<BodyOrbit>());
-                                byDepth[d].Add(bo);
+                                while (_byDepthBuffer.Count <= d)
+                                    _byDepthBuffer.Add(new List<BodyOrbit>());
+                                _byDepthBuffer[d].Add(bo);
                             }
 
-                            foreach (var level in byDepth)
+                            for (int lvl = 0; lvl < _byDepthBuffer.Count; lvl++)
                             {
+                                var level = _byDepthBuffer[lvl];
+                                if (level.Count == 0) continue;
+
                                 if (level.Count >= PerfOptPlugin.CfgParallelMinBatch)
                                 {
-                                    Parallel.ForEach(level, bo =>
+                                    var levelArr = level;
+                                    Parallel.For(0, levelArr.Count, j =>
                                     {
-                                        try { bo.UpdateTime(epoch); }
+                                        try { levelArr[j].UpdateTime(epoch); }
                                         catch { }
                                     });
                                 }
@@ -323,20 +420,12 @@ namespace OstronautsPerfOpt
                                 Stopwatch.GetTimestamp() - ts;
                             PerfOptPlugin.COrbits++;
                         }
-                        else
-                        {
-                            for (int i = 0; i < idx; i++)
-                            {
-                                try { orbits[i].UpdateTime(epoch); }
-                                catch { }
-                            }
-                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     PerfOptPlugin.Log.LogWarning(
-                        $"[PAR-ORB] Parallel orbit update failed: {ex.Message}");
+                        $"[PAR-ORB] Parallel orbit update skipped: {ex.Message}");
                 }
             }
         }

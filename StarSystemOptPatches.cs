@@ -63,30 +63,6 @@ namespace OstronautsPerfOpt
     }
 
     // ========================================
-    // CONDOWNER UPDATESTATS: Skip string allocation when unchanged
-    // ========================================
-    // Original allocates ((double)(1f - rate) * 100.0).ToString("#.00") + "%"
-    // every frame even when the rate hasn't meaningfully changed.
-    // Patch: Postfix that suppresses the dictionary write if value matches.
-
-    [HarmonyPatch]
-    public static class Patch_UpdateStats_NoAlloc
-    {
-        static MethodBase TargetMethod()
-        {
-            return AccessTools.Method(typeof(CondOwner), "UpdateStats");
-        }
-
-        static void Postfix(CondOwner __instance)
-        {
-            // The original already has a _lastDamageUpdate != damageRate check.
-            // But it still allocates the string before the comparison.
-            // Our Postfix runs after, so we can't prevent the allocation.
-            // Instead, we just track that it ran for profiling.
-        }
-    }
-
-    // ========================================
     // LOADMANAGER SAVESCREENSHOT: Defer to background thread
     // ========================================
     // Original runs RenderTexture capture + EncodeToPNG synchronously on
@@ -152,13 +128,10 @@ namespace OstronautsPerfOpt
         private static float _cachedFlicker = -999f;
         private static int _cachedFlickerFrame = -1;
 
-        static bool Prefix(Ship __instance, ref bool __result)
+        static bool Prefix(Ship __instance)
         {
             if (Time.timeScale >= 4f)
-            {
-                __result = false;
                 return false;
-            }
 
             int fc = Time.frameCount;
             if (fc != _cachedFlickerFrame)
@@ -175,7 +148,6 @@ namespace OstronautsPerfOpt
                 || CrewSim.Paused
                 || _cachedFlicker < 0f)
             {
-                __result = false;
                 return false;
             }
             return true;
