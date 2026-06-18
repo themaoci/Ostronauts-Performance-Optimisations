@@ -165,6 +165,8 @@ namespace OstronautsPerfOpt
                 typeof(Patch_DoLoadGame_BatchYields),
                 typeof(Patch_UpdateICOs_NoCopy),
                 typeof(Patch_DebugLog_Suppress),
+                typeof(Patch_DebugLogWarning_Passthrough),
+                typeof(Patch_DebugLogError_Passthrough),
                 typeof(Patch_SaveGame_Threaded),
                 typeof(Patch_UpdateShip_DefaultGravBO),
                 typeof(Patch_SaveScreenShot_Skip),
