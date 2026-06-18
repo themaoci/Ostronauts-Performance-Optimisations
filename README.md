@@ -4,9 +4,10 @@
 > parallelizes CPU-heavy loops, fixes memory leaks, and accelerates save/load
 > — without changing gameplay behavior.**
 >
-> _I was testing a new military-grade AI system while making this mod._
+> _I was testing a new military-grade AI+CLI system while making this mod._
+_Releasing under: Do whatever you want, I want developers to read the notes and fix their game._
 
-[![Release](https://img.shields.io/badge/release-v4.3.0-blue)](../../releases)
+[![Release](https://img.shields.io/badge/release-v4.4.0-blue)](../../releases)
 [![Game](https://img.shields.io/badge/game-Ostranauts-9cf)](https://store.steampowered.com/app/1022980/Ostranauts/)
 [![BepInEx](https://img.shields.io/badge/BepInEx-5.4.x-orange)](https://github.com/BepInEx/BepInEx)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -86,27 +87,35 @@ addresses all of those without altering simulation outcomes.
 - The original optimizer design (v4.1) pre-allocated a `byte[]` block to "warm"
   the Boehm heap. On Boehm GC (non-generational, non-marking on the large
   object heap) those blocks become unreachable but are not collected,
-  inflating reported memory by the full expansion size. Disabled — `ExpandHeap`
-  is a no-op.
+  inflating reported memory by the full expansion size. v4.3 disabled this
+  entirely, but the trade-off backfired: without a pre-expanded free pool,
+  per-frame large allocations triggered more frequent full Boehm GCs, and
+  the worst-frame spike grew from 2062ms (v4.2, with expansion) to 4099ms
+  (v4.3, without). v4.4 re-enables expansion but **Large Object Heap only**:
+  131072-byte blocks (above Boehm's ~85000-byte LOH threshold), held alive
+  in a static `byte[][] _lohPool` field so they remain reachable and serve
+  as a permanent free pool for per-frame large allocations. The v4.1/v4.2
+  small-object allocation loop (which produced unreachable SOH garbage) is
+  gone.
 - `GC.TryStartNoGCRegion` was called per frame. On Boehm this suppresses
   collection, allocations accumulate, and the inevitable forced GC is larger
   than it would have been without the region. Removed.
 - A `MemCeiling`-triggered full GC on a 3 GB Boehm heap takes 5–13 seconds.
-  The ceiling is removed; Boehm self-manages with
-  `GCSettings.LatencyMode = LowLatency` instead.
+  The ceiling is set high (3072 MB) as a safety net only; Boehm self-manages
+  with `GCSettings.LatencyMode = LowLatency` for the steady state and
+  `Interactive` during a forced sweep.
 - All GC work uses `GC.Collect(0, GCCollectionMode.Optimized, false)` — a
   single generation-0 sweep — never a full `GC.Collect()`.
 
 ### Visual deferral bucket
-- `CondOwner.UpdateManual` registers the CO into a round-robin bucket instead
-  of running `RefreshAnim` + `UpdateStats` + `VisualizeOverlays` inline every
-  frame.
-- The bucket is processed in `LateUpdate` with per-CO intervals:
-  selected = every frame, visible = every 3 frames, offscreen = every 10
-  frames. A max of 64 visual updates per frame prevents bucket-sweep spikes.
-- Note: the `Patch_UpdateManual_VisualDeferral` transpiler has an IL compile
-  error and is currently **omitted from the patch registry**. The bucket system
-  itself is wired up and will activate the moment that transpiler is fixed.
+- **Removed in v4.4.** The `Patch_UpdateManual_VisualDeferral` transpiler
+  had an IL compile error (see Developer_Notes §10.4) and was omitted from
+  the patch registry, but `CfgVisualDeferral=true` still gated the
+  `Patch_UpdateICOsParallelPrepass` `UpdateStats` branch — risking a
+  double-`UpdateStats` invocation per CondOwner per frame. The entire
+  feature (transpiler, bucket, `ProcessVisualBucket`, `RegisterForVisualUpdate`,
+  and the prepass `doStats` branch) is removed. `UpdateManual` now runs
+  `RefreshAnim` + `UpdateStats` + `VisualizeOverlays` inline as in vanilla.
 
 ### FPS overlay + spike profiler
 - A top-right `OnGUI` label shows `FPS / Worst-frame-ms / managed-MB / Sim`
