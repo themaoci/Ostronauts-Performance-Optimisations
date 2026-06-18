@@ -17,7 +17,7 @@ using System.Threading;
 namespace OstronautsPerfOpt
 {
     [BepInPlugin("com.ostronauts.perfopt",
-        "Ostronauts Performance Optimizer", "4.3.0")]
+        "Ostronauts Performance Optimizer", "4.4.0")]
     public class PerfOptPlugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -26,8 +26,8 @@ namespace OstronautsPerfOpt
         internal const bool CfgFirstOrDefault = true;
         internal const bool CfgInteractionCache = true;
         internal const float CfgMaxDeltaTime = 0.1f;
-        internal const int CfgHeapExpansionMB = 0;
-        internal const int CfgMemCeilingMB = 0;
+        internal const int CfgHeapExpansionMB = 128;
+        internal const int CfgMemCeilingMB = 3072;
         internal const int CfgGCIntervalSec = 0;
         internal const int CfgMinFreeMB = 0;
         internal const bool CfgProfiling = true;
@@ -36,11 +36,6 @@ namespace OstronautsPerfOpt
         internal const bool CfgParallelUpdateStats = true;
         internal const bool CfgParallelCleanupExpiry = true;
         internal const int CfgParallelMinBatch = 8;
-        internal const bool CfgVisualDeferral = true;
-        internal const int CfgSelectedInterval = 1;
-        internal const int CfgVisibleInterval = 3;
-        internal const int CfgOffscreenInterval = 10;
-        internal const int CfgVisualBatchPerFrame = 64;
         internal const bool CfgLowLatencyGC = true;
         internal const bool CfgEliminateToList = true;
         internal const bool CfgCacheComponents = true;
@@ -93,7 +88,6 @@ namespace OstronautsPerfOpt
         public static long TCleanup;     public static int CCleanup;
         public static long TUpdateStats; public static int CUpdateStats;
         public static long TOrbits;      public static int COrbits;
-        public static long TVisualDeferred; public static int CVisualDeferred;
         public static long TNoGC;        public static int CNoGC;
         public static int IACacheHits;
         public static int ParallelBatchesRun;
@@ -105,15 +99,15 @@ namespace OstronautsPerfOpt
         public static long FrameAllocTotal;
         public static long AllocAdvanceSim;
         public static long AllocStarSys;
+        public static long AllocEndTurn;
+        public static long AllocGetMove2;
+        public static long AllocGetWork;
+        public static long AllocParseCL;
+        public static long AllocCleanup;
+        public static long AllocUpdateStats;
 
         private static FieldInfo _fTimeCoeffPause;
-        private static MethodInfo _mUpdateStats;
         private float _lastDiag;
-
-        private static readonly List<CondOwner> _visualBucket = new List<CondOwner>(256);
-        private static int _visualBucketIdx;
-        private static int _offscreenLayer = -1;
-        private static int _tileHelpersLayer = -1;
 
         private static readonly StringBuilder SB = new StringBuilder(4096);
 
@@ -122,7 +116,6 @@ namespace OstronautsPerfOpt
             Log = Logger;
 
             _fTimeCoeffPause = AccessTools.Field(typeof(CrewSim), "fTimeCoeffPause");
-            _mUpdateStats = AccessTools.Method(typeof(CondOwner), "UpdateStats");
 
             Time.maximumDeltaTime = CfgMaxDeltaTime;
             Log.LogInfo($"[CFG] maxDeltaTime -> {CfgMaxDeltaTime}");
@@ -139,15 +132,14 @@ namespace OstronautsPerfOpt
                 Log.LogWarning($"[GC] Failed to set LowLatency: {ex.Message}");
             }
 
-            try
-            {
-                _offscreenLayer = LayerMask.NameToLayer("Ship Offscreen");
-                _tileHelpersLayer = LayerMask.NameToLayer("Tile Helpers");
-            }
-            catch { }
-
             Log.LogInfo($"[MONO] heap={GC.GetTotalMemory(false) / 1048576}MB (managed)");
             Log.LogInfo($"[THREADS] Available: {Environment.ProcessorCount}");
+
+            try { SpikeProfiler.Start(); }
+            catch (Exception ex)
+            {
+                Log.LogWarning($"[STACK-PROF] Failed to start sampler: {ex.Message}");
+            }
 
             var harmony = new Harmony("com.ostronauts.perfopt");
             int ok = 0;
@@ -179,7 +171,9 @@ namespace OstronautsPerfOpt
                 typeof(Patch_SaveCrewPortraits_Skip),
                 typeof(Patch_Sparks_CacheFlicker),
                 typeof(Patch_DamageOverTime_Skip),
-                typeof(Patch_UpdateCrewSkills_Throttle)
+                typeof(Patch_InstallStart_KeepInventoryOpen),
+                typeof(Patch_ClaimTaskDirect_QueueStack),
+                typeof(Patch_GetAvailActions_KeepClickable)
             };
 
             for (int i = 0; i < patches.Length; i++)
@@ -270,14 +264,11 @@ namespace OstronautsPerfOpt
                 }
             }
 
-            if (CfgVisualDeferral && GameLoaded && !paused && _visualBucket.Count > 0)
-                ProcessVisualBucket();
-
             if (Time.realtimeSinceStartup - _lastDiag >= 5f)
             {
                 _lastDiag = Time.realtimeSinceStartup;
                 Log.LogInfo($"[DIAG] loaded={GameLoaded} paused={paused}" +
-                    $" Sim={SimStepsThisFrame} VisBucket={_visualBucket.Count}" +
+                    $" Sim={SimStepsThisFrame}" +
                     $" ToListSkip={ToListEliminated}");
             }
 
@@ -287,95 +278,6 @@ namespace OstronautsPerfOpt
                 _reportTimer = 0f;
                 LogReport();
             }
-        }
-
-        private void ProcessVisualBucket()
-        {
-            int count = _visualBucket.Count;
-            if (count == 0) return;
-
-            int fc = Time.frameCount;
-            int selectedInterval = CfgSelectedInterval;
-            int visibleInterval = CfgVisibleInterval;
-            int offscreenInterval = CfgOffscreenInterval;
-            int maxPerFrame = CfgVisualBatchPerFrame;
-
-            CondOwner selectedCrew = null;
-            try { selectedCrew = CrewSim.GetSelectedCrew(); }
-            catch { }
-
-            int processed = 0;
-            int startIdx = _visualBucketIdx % count;
-
-            for (int i = 0; i < count; i++)
-            {
-                int idx = (startIdx + i) % count;
-                CondOwner co = _visualBucket[idx];
-                if (co == null || co.bDestroyed)
-                {
-                    _visualBucket[idx] = null;
-                    continue;
-                }
-
-                int interval;
-                if (co == selectedCrew)
-                    interval = selectedInterval;
-                else if (offscreenInterval > 0 && _offscreenLayer >= 0
-                    && co.gameObject.layer == _offscreenLayer)
-                    interval = offscreenInterval;
-                else
-                    interval = visibleInterval;
-
-                if (interval <= 0)
-                    continue;
-
-                if (fc % interval != idx % interval)
-                    continue;
-
-                try
-                {
-                    co.RefreshAnim();
-                    _mUpdateStats.Invoke(co, null);
-                    if (co.Item != null)
-                        co.Item.VisualizeOverlays();
-                    processed++;
-                    CVisualDeferred++;
-                }
-                catch { }
-
-                if (maxPerFrame > 0 && processed >= maxPerFrame)
-                    break;
-            }
-
-            _visualBucketIdx = (startIdx + count) % count;
-
-            if (count > 512)
-            {
-                int nulls = 0;
-                for (int i = 0; i < count; i++)
-                {
-                    if (_visualBucket[i] == null || _visualBucket[i].bDestroyed)
-                        nulls++;
-                }
-                if (nulls > count / 2)
-                {
-                    _visualBucket.RemoveAll(c => c == null || c.bDestroyed);
-                    _visualBucketIdx = 0;
-                }
-            }
-        }
-
-        internal static void RegisterForVisualUpdate(CondOwner co)
-        {
-            if (co == null || co.bDestroyed) return;
-
-            int count = _visualBucket.Count;
-            for (int i = 0; i < count; i++)
-            {
-                if (_visualBucket[i] == co)
-                    return;
-            }
-            _visualBucket.Add(co);
         }
 
         private void CheckMemoryCeiling()
@@ -466,43 +368,31 @@ namespace OstronautsPerfOpt
             }
 
             long before = GC.GetTotalMemory(false);
-            Log.LogInfo($"[HEAP] Expanding by ~{targetMB}MB...");
+            Log.LogInfo($"[HEAP] Expanding LOH free-list by ~{targetMB}MB...");
 
             try
             {
-                int largeBlockSize = 65536;
-                int largeCount = targetMB * 16;
-                int smallCount = targetMB * 102;
-                int totalCount = largeCount + smallCount;
-                object[] blocks = new object[totalCount];
-                int idx = 0;
-
+                const int LargeBlockSize = 131072;
+                int largeCount = targetMB * 8;
+                byte[][] blocks = new byte[largeCount][];
                 for (int i = 0; i < largeCount; i++)
-                    blocks[idx++] = new byte[largeBlockSize];
+                    blocks[i] = new byte[LargeBlockSize];
 
-                for (int i = 0; i < smallCount; i++)
-                {
-                    switch (i % 5)
-                    {
-                        case 0: blocks[idx++] = new byte[32]; break;
-                        case 1: blocks[idx++] = new byte[64]; break;
-                        case 2: blocks[idx++] = new byte[128]; break;
-                        case 3: blocks[idx++] = new byte[256]; break;
-                        case 4: blocks[idx++] = new byte[512]; break;
-                    }
-                }
+                long peak = GC.GetTotalMemory(false);
 
                 blocks = null;
+                GC.Collect(0, GCCollectionMode.Optimized, false);
 
                 long after = GC.GetTotalMemory(false);
-                long delta = after - before;
+                long delta = peak - before;
                 _heapExpandResult = $"M:{before / 1048576}>{after / 1048576}MB" +
-                    $" +{delta / 1048576}MB (pages retained)";
+                    $" +{delta / 1048576}MB (LOH freed to pool)";
 
                 Log.LogInfo($"[HEAP] Before: M={before / 1048576}MB");
+                Log.LogInfo($"[HEAP] Peak:   M={peak / 1048576}MB");
                 Log.LogInfo($"[HEAP] After:  M={after / 1048576}MB");
-                Log.LogInfo($"[HEAP] Delta +{delta / 1048576}MB. " +
-                    "Boehm pages retained as free pool.");
+                Log.LogInfo($"[HEAP] Expanded +{delta / 1048576}MB. " +
+                    $"{largeCount} x {LargeBlockSize >> 10}KB LOH blocks released to free-list.");
             }
             catch (Exception ex)
             {
@@ -522,7 +412,7 @@ namespace OstronautsPerfOpt
             float avgSim = _frameCount > 0 ? (float)SimStepsTotal / _frameCount : 0;
 
             SB.Length = 0;
-            SB.Append($"\n=== PERF v4.3.0 ({CfgProfileIntervalSec}s) ===\n");
+            SB.Append($"\n=== PERF v4.4.0 ({CfgProfileIntervalSec}s) ===\n");
             SB.Append($"  Fr: {_frameCount} ({active}act)");
             SB.Append($" FPS:{fps:F0}");
             SB.Append($" Worst:{_worstFrameMs:F1}ms\n");
@@ -543,8 +433,6 @@ namespace OstronautsPerfOpt
             AppendTiming("  SS ", TStarSys, CStarSys);
             AppendTiming("  ORB", TOrbits, COrbits);
 
-            if (CVisualDeferred > 0)
-                SB.Append($"  VisDef:{CVisualDeferred} bucket:{_visualBucket.Count}\n");
             if (ToListEliminated > 0)
                 SB.Append($"  ToListSkip:{ToListEliminated}\n");
             if (ComponentCacheHits > 0)
@@ -562,12 +450,16 @@ namespace OstronautsPerfOpt
             SB.Append($"\n  Alloc:{FrameAllocTotal / 1024.0:F0}KB" +
                 $" ({FrameAllocTotal / (CfgProfileIntervalSec * 1024.0):F0}KB/s)");
 
-            if (AllocAdvanceSim > 0 || AllocStarSys > 0)
-            {
-                SB.Append($"\n  A.AS:{AllocAdvanceSim / 1024.0:F0}KB" +
-                    $" A.SS:{AllocStarSys / 1024.0:F0}KB" +
-                    $" A.Oth:{(FrameAllocTotal - AllocAdvanceSim - AllocStarSys) / 1024.0:F0}KB");
-            }
+            long other = FrameAllocTotal - AllocAdvanceSim - AllocStarSys;
+            SB.Append($"\n  A.AS:{AllocAdvanceSim / 1024.0:F0}KB" +
+                $" A.SS:{AllocStarSys / 1024.0:F0}KB" +
+                $" A.Oth:{other / 1024.0:F0}KB");
+            SB.Append($"\n  AS-breakdown ET:{AllocEndTurn / 1024.0:F0}KB" +
+                $" GM2:{AllocGetMove2 / 1024.0:F0}KB" +
+                $" GW:{AllocGetWork / 1024.0:F0}KB" +
+                $" PCL:{AllocParseCL / 1024.0:F0}KB" +
+                $" CU:{AllocCleanup / 1024.0:F0}KB" +
+                $" US:{AllocUpdateStats / 1024.0:F0}KB");
 
             if (_heapExpandResult.Length > 0)
                 SB.Append($"\n  Heap: {_heapExpandResult}");
@@ -602,7 +494,6 @@ namespace OstronautsPerfOpt
             TCleanup = 0; CCleanup = 0;
             TUpdateStats = 0; CUpdateStats = 0;
             TOrbits = 0; COrbits = 0;
-            TVisualDeferred = 0; CVisualDeferred = 0;
             TNoGC = 0; CNoGC = 0;
             IACacheHits = 0;
             ParallelBatchesRun = 0;
@@ -610,6 +501,8 @@ namespace OstronautsPerfOpt
             TickerPreSized = 0; FirstOrDefaultSkipped = 0;
             FrameAllocTotal = 0;
             AllocAdvanceSim = 0; AllocStarSys = 0;
+            AllocEndTurn = 0; AllocGetMove2 = 0; AllocGetWork = 0;
+            AllocParseCL = 0; AllocCleanup = 0; AllocUpdateStats = 0;
         }
 
         private void AppendTiming(string label, long ticks, int count)
