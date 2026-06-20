@@ -314,18 +314,17 @@ namespace OstronautsPerfOpt
         }
 
         // Static members on CondOwner (private or inaccessible at compile time)
-        private static CondTrigger _cachedCTPlayerCrew;
         private static string[] _cachedAIRandomAvoid;
         private static MethodInfo _getCOScoreMethod;
         [ThreadStatic] private static object[] _getCOScoreArgs;
 
+        // CondTrigger is a Unity Object that can be destroyed on save/load
+        // or scene change — a stale reference becomes "fake null" and calling
+        // .Triggered() on it crashes the Unity main thread. Always re-fetch
+        // from DataHandler (cheap dict lookup) and skip the static cache.
         private static CondTrigger GetCTPlayerCrew()
         {
-            if (_cachedCTPlayerCrew == null)
-            {
-                _cachedCTPlayerCrew = DataHandler.GetCondTrigger("TIsPlayerCrew");
-            }
-            return _cachedCTPlayerCrew;
+            return DataHandler.GetCondTrigger("TIsPlayerCrew");
         }
 
         private static string[] GetAIRandomAvoid()
