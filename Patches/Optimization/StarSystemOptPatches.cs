@@ -11,58 +11,7 @@ using UnityEngine;
 using Ostranauts.Core;
 
 namespace OstronautsPerfOpt
-{    // ========================================
-    // STARSYSTEM UPDATESHIP: Cache default gravity BO
-    // ========================================
-    // Original: temp_boGrav = aBOs.FirstOrDefault().Value;
-    // This allocates an enumerator every call for every ship every frame.
-    // Can't transpile Dictionary.First() easily (multiple overloads).
-    // Instead, we cache the default BO in a static field and expose it
-    // for the game's code via a Postfix that patches the result field.
-
-    [HarmonyPatch]
-    public static class Patch_UpdateShip_DefaultGravBO
-    {
-        static MethodBase TargetMethod()
-        {
-            return AccessTools.Method(typeof(StarSystem), "UpdateShip");
-        }
-
-        private static readonly FieldInfo _aBOsField =
-            AccessTools.Field(typeof(StarSystem), "aBOs");
-        private static readonly FieldInfo _tempBOGravField =
-            AccessTools.Field(typeof(StarSystem), "temp_boGrav");
-        private static IDictionary _cachedABOs;
-        private static object _cachedDefaultBO;
-        private static int _cachedABOsCount = -1;
-
-        static void Postfix(StarSystem __instance)
-        {
-            if (!PerfOptPlugin.GameLoaded) return;
-
-            var tempBOGrav = _tempBOGravField?.GetValue(__instance);
-            if (tempBOGrav != null) return;
-
-            var aBOs = _aBOsField?.GetValue(__instance) as IDictionary;
-            if (aBOs == null || aBOs.Count == 0) return;
-
-            if (aBOs != _cachedABOs || aBOs.Count != _cachedABOsCount)
-            {
-                _cachedABOs = aBOs;
-                _cachedABOsCount = aBOs.Count;
-                _cachedDefaultBO = null;
-                foreach (DictionaryEntry entry in aBOs)
-                {
-                    _cachedDefaultBO = entry.Value;
-                    break;
-                }
-            }
-
-            if (_cachedDefaultBO != null && _tempBOGravField != null)
-                _tempBOGravField.SetValue(__instance, _cachedDefaultBO);
-        }
-    }
-
+{
     // ========================================
     // LOADMANAGER SAVESCREENSHOT: defer to coroutine, clean up after use
     // ========================================
@@ -71,15 +20,16 @@ namespace OstronautsPerfOpt
     // thread before the threaded save job starts. This causes 100-500ms
     // freezes on every save.
     //
-    // Patch: Prefix returns null immediately (zero cost on the save frame)
-    // and starts a coroutine on LoadManager. The coroutine yields one frame
-    // (so the save frame completes), then does the GPU capture + PNG encode +
-    // file write, then destroys the RenderTexture and Texture2D. The save-list
+    // Patch: Prefix returns false immediately and sets __result = null
+    // (zero cost on the save frame) and starts a coroutine on LoadManager.
+    // The coroutine yields one frame (so the save frame completes), then
+    // does the GPU capture + PNG encode + file write, then destroys the
+    // RenderTexture and Texture2D. The save-list
     // UI reads screenshot.png from disk later (_LoadSaveInfoImages), so the
     // in-memory _loadedSave.ScreenShot being null is fine.
 
     [HarmonyPatch]
-    public static class Patch_SaveScreenShot_Skip
+    public static class Patch_SaveScreenShot_Defer
     {
         static MethodBase TargetMethod()
         {
@@ -147,7 +97,7 @@ namespace OstronautsPerfOpt
     // writes, and destroys the texture. Zero cost on the save frame.
 
     [HarmonyPatch]
-    public static class Patch_SaveCrewPortraits_Skip
+    public static class Patch_SaveCrewPortraits_Defer
     {
         static MethodBase TargetMethod()
         {
@@ -202,6 +152,129 @@ namespace OstronautsPerfOpt
 
                 yield return null;
             }
+        }
+    }
+
+    // ========================================
+    // STARSYSTEM.UPDATESHIP: eliminate FirstOrDefault enumerator alloc
+    // ========================================
+    // Vanilla UpdateShip (StarSystem.cs:1772) does:
+    //   this.temp_boGrav = this.aBOs.FirstOrDefault<KeyValuePair<string,BodyOrbit>>().Value;
+    // Enumerable.FirstOrDefault on Dictionary allocates an IEnumerator on the heap
+    // every call. Called per ship per frame.
+    //
+    // Fix: Transpiler replaces the FirstOrDefault + get_Value pair with a single
+    // call to GetFirstBOValue which uses Dictionary's struct enumerator (no alloc).
+
+    [HarmonyPatch]
+    public static class Patch_UpdateShip_FirstBO_NoAlloc
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(StarSystem), "UpdateShip");
+        }
+
+        private static readonly MethodInfo _firstBOResultMethod =
+            AccessTools.Method(typeof(Patch_UpdateShip_FirstBO_NoAlloc), "GetFirstBOValue");
+
+        static IEnumerable<CodeInstruction> Transpiler(
+            IEnumerable<CodeInstruction> instructions)
+        {
+            var codes = new List<CodeInstruction>(instructions);
+            int patchCount = 0;
+
+            for (int i = 0; i < codes.Count - 1; i++)
+            {
+                if (codes[i].opcode == OpCodes.Call &&
+                    codes[i].operand is MethodInfo mi &&
+                    mi.Name == "FirstOrDefault" &&
+                    mi.DeclaringType == typeof(Enumerable))
+                {
+                    if (codes[i + 1].opcode == OpCodes.Call &&
+                        codes[i + 1].operand is MethodInfo mi2 &&
+                        mi2.Name == "get_Value")
+                    {
+                        codes[i] = new CodeInstruction(OpCodes.Call, _firstBOResultMethod);
+                        codes[i + 1] = new CodeInstruction(OpCodes.Nop);
+                        patchCount++;
+                        i++;
+                    }
+                }
+            }
+
+            if (patchCount > 0)
+                PerfOptPlugin.Log.LogInfo(
+                    $"[GC-BO] StarSystem.UpdateShip: replaced {patchCount} FirstOrDefault().Value with no-alloc helper");
+            else
+                PerfOptPlugin.Log.LogInfo(
+                    "[GC-BO] StarSystem.UpdateShip: FirstOrDefault pattern not found");
+
+            return codes;
+        }
+
+        public static BodyOrbit GetFirstBOValue(Dictionary<string, BodyOrbit> dict)
+        {
+            if (dict == null) return null;
+            foreach (var kvp in dict)
+                return kvp.Value;
+            return null;
+        }
+    }
+
+    // ========================================
+    // CONDOWNER.UPDATEMANUAL: eliminate Debug.Log alloc on ticker overflow
+    // ========================================
+    // Vanilla UpdateManual (CondOwner.cs:362) does:
+    //   Debug.Log(string.Concat(new string[] { "#Info# ", this.strName, ... }));
+    // The new string[] + string.Concat allocates even though Debug.Log is
+    // suppressed by Patch_DebugLog_Suppress (argument evaluates before Prefix).
+    // Called when a ticker exceeds maxRepeats — frequent during x4 speed.
+    //
+    // Fix: Transpiler removes the entire newarr + element fills + Concat + Log
+    // sequence so no allocation occurs.
+
+    [HarmonyPatch]
+    public static class Patch_UpdateManual_NoTickerLog
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(CondOwner), "UpdateManual");
+        }
+
+        private static readonly MethodInfo _debugLogMethod =
+            AccessTools.Method(typeof(UnityEngine.Debug), "Log", new[] { typeof(string) });
+        private static readonly MethodInfo _stringConcatMethod =
+            AccessTools.Method(typeof(string), "Concat", new[] { typeof(string[]) });
+
+        static IEnumerable<CodeInstruction> Transpiler(
+            IEnumerable<CodeInstruction> instructions)
+        {
+            var codes = new List<CodeInstruction>(instructions);
+
+            for (int i = codes.Count - 1; i >= 0; i--)
+            {
+                if (codes[i].opcode == OpCodes.Call &&
+                    codes[i].operand is MethodInfo mi &&
+                    mi == _debugLogMethod)
+                {
+                    int start = i;
+                    while (start > 0 &&
+                           codes[start - 1].opcode != OpCodes.Newarr)
+                    {
+                        start--;
+                    }
+                    if (start > 0 && codes[start - 1].opcode == OpCodes.Newarr)
+                    {
+                        start--;
+                    }
+
+                    for (int j = start; j <= i; j++)
+                        codes[j] = new CodeInstruction(OpCodes.Nop);
+                    break;
+                }
+            }
+
+            return codes;
         }
     }
 

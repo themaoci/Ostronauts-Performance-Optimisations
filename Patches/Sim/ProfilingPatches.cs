@@ -11,7 +11,9 @@ using System.Threading.Tasks;
 namespace OstronautsPerfOpt
 {
     // ========================================
-    // PROFILING PATCHES — observation only
+    // PROFILING PATCHES — timing + alloc observation
+    // (Patch_StarSystemUpdate also detects GameLoaded and clears the
+    //  interaction-log cache on first StarSystem.Update call)
     // ========================================
 
     [HarmonyPatch]
@@ -25,7 +27,7 @@ namespace OstronautsPerfOpt
         private static long _memBefore;
         private static int _gcBefore;
 
-        static void Prefix(ref long __state)
+        static bool Prefix(ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
 
@@ -36,6 +38,7 @@ namespace OstronautsPerfOpt
             }
 
             PerfOptPlugin.SimStepsThisFrame++;
+            return true;
         }
 
         static void Postfix(long __state)
@@ -98,7 +101,7 @@ namespace OstronautsPerfOpt
         private static long _memBefore;
         private static int _gcBefore;
 
-        static void Prefix(ref long __state)
+        static void Prefix(CondOwner __instance, ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
             if (PerfOptPlugin.IsProfiling)
@@ -108,14 +111,17 @@ namespace OstronautsPerfOpt
             }
         }
 
-        static void Postfix(long __state)
+        static void Postfix(CondOwner __instance, long __state)
         {
             long Elapsed = Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.TEndTurn += Elapsed;
             PerfOptPlugin.CEndTurn++;
             float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
             if (Ms > 20f)
-                PerfOptPlugin.Log.LogInfo("[SIM-DIAG] EndTurn " + Ms.ToString("F1") + "ms");
+            {
+                PerfOptPlugin.Log.LogInfo(
+                    $"[SIM-DIAG] EndTurn {Ms:F1}ms CO={__instance.strName} ({__instance.strNameFriendly}) type={__instance.GetType().Name}");
+            }
 
             if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
             {
@@ -136,7 +142,7 @@ namespace OstronautsPerfOpt
         private static long _memBefore;
         private static int _gcBefore;
 
-        static void Prefix(ref long __state)
+        static void Prefix(CondOwner __instance, ref long __state)
         {
             __state = Stopwatch.GetTimestamp();
             if (PerfOptPlugin.IsProfiling)
@@ -146,14 +152,17 @@ namespace OstronautsPerfOpt
             }
         }
 
-        static void Postfix(long __state)
+        static void Postfix(CondOwner __instance, long __state)
         {
             long Elapsed = Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.TGetMove2 += Elapsed;
             PerfOptPlugin.CGetMove2++;
             float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
             if (Ms > 20f)
-                PerfOptPlugin.Log.LogInfo("[SIM-DIAG] GetMove2 " + Ms.ToString("F1") + "ms");
+            {
+                PerfOptPlugin.Log.LogWarning(
+                    $"[SIM-DIAG] GetMove2 {Ms:F1}ms CO={__instance.strName} ({__instance.strNameFriendly}) type={__instance.GetType().Name}");
+            }
 
             if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
             {
@@ -319,13 +328,6 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(StarSystem), "Update");
         }
 
-        private static readonly FieldInfo _aBOsField =
-            AccessTools.Field(typeof(StarSystem), "aBOs");
-
-        private static BodyOrbit[] _orbitBuffer = new BodyOrbit[64];
-        private static List<List<BodyOrbit>> _byDepthBuffer = new List<List<BodyOrbit>>(4);
-        private static Dictionary<BodyOrbit, int> _depthMap = new Dictionary<BodyOrbit, int>(64);
-
         private static long _memBefore;
         private static int _gcBefore;
 
@@ -345,88 +347,6 @@ namespace OstronautsPerfOpt
                 Patch_SuppressInteractionLog.ClearCache();
                 PerfOptPlugin.Log.LogInfo(
                     "[GAME] StarSystem.Update — game loaded detected");
-            }
-
-            if (PerfOptPlugin.CfgParallelOrbits && PerfOptPlugin.GameLoaded)
-            {
-                try
-                {
-                    var aBOs = _aBOsField?.GetValue(__instance)
-                        as IDictionary;
-                    if (aBOs != null && aBOs.Count > 0)
-                    {
-                        double epoch = StarSystem.fEpoch;
-
-                        if (_orbitBuffer.Length < aBOs.Count)
-                            _orbitBuffer = new BodyOrbit[aBOs.Count + 8];
-                        var orbits = _orbitBuffer;
-                        int idx = 0;
-                        foreach (DictionaryEntry entry in aBOs)
-                        {
-                            if (entry.Value is BodyOrbit bo)
-                                orbits[idx++] = bo;
-                        }
-
-                        if (idx >= PerfOptPlugin.CfgParallelMinBatch)
-                        {
-                            long ts = Stopwatch.GetTimestamp();
-                            PerfOptPlugin.ParallelBatchesRun++;
-
-                            _depthMap.Clear();
-                            for (int i = 0; i < _byDepthBuffer.Count; i++)
-                                _byDepthBuffer[i].Clear();
-
-                            for (int i = 0; i < idx; i++)
-                            {
-                                var bo = orbits[i];
-                                int d;
-                                if (!_depthMap.TryGetValue(bo, out d))
-                                {
-                                    d = 0;
-                                    var p = bo.boParent;
-                                    while (p != null) { d++; p = p.boParent; }
-                                    _depthMap[bo] = d;
-                                }
-                                while (_byDepthBuffer.Count <= d)
-                                    _byDepthBuffer.Add(new List<BodyOrbit>());
-                                _byDepthBuffer[d].Add(bo);
-                            }
-
-                            for (int lvl = 0; lvl < _byDepthBuffer.Count; lvl++)
-                            {
-                                var level = _byDepthBuffer[lvl];
-                                if (level.Count == 0) continue;
-
-                                if (level.Count >= PerfOptPlugin.CfgParallelMinBatch)
-                                {
-                                    var levelArr = level;
-                                    Parallel.For(0, levelArr.Count, j =>
-                                    {
-                                        try { levelArr[j].UpdateTime(epoch); }
-                                        catch { }
-                                    });
-                                }
-                                else
-                                {
-                                    for (int i = 0; i < level.Count; i++)
-                                    {
-                                        try { level[i].UpdateTime(epoch); }
-                                        catch { }
-                                    }
-                                }
-                            }
-
-                            PerfOptPlugin.TOrbits +=
-                                Stopwatch.GetTimestamp() - ts;
-                            PerfOptPlugin.COrbits++;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    PerfOptPlugin.Log.LogWarning(
-                        $"[PAR-ORB] Parallel orbit update skipped: {ex.Message}");
-                }
             }
         }
 

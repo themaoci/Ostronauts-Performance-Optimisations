@@ -78,9 +78,10 @@ caches the component lookup internally, the call still allocates a wrapper and
 runs a linear search over the GameObject's components. The scaleFactor only
 changes when the window is resized or the canvas scaler recalalculates.
 
-**Mod fix:** Transpiler replaces the `GetComponent<Canvas>().scaleFactor`
-sequence with `Patch_CrewSim_CacheComponents.GetCachedScaleFactor()`, which
-caches per frame.
+**Mod fix:** None. The previous `Patch_CrewSim_CacheComponents` transpiler
+(caching `Canvas` + `scaleFactor` per frame) was removed in v5.0.0 — it
+interfered with canvas scaler recalculations. This issue is no longer
+mitigated by the mod.
 
 **Recommended upstream fix:** Cache the `Canvas` reference on first access in
 `CanvasManager` and expose `CanvasManager.GuiScaleFactor` as a property. Or
@@ -94,8 +95,9 @@ subscribe to `Canvas.willRenderCanvases` and update a static field.
 frame to check vacuum audio state. Component lookups are O(components on the
 GameObject) and allocate per call.
 
-**Mod fix:** Transpiler swaps the call to
-`GetCachedVacuumController(co)` which caches per-frame + per-CO.
+**Mod fix:** None. The previous `Patch_CrewSim_CacheComponents` transpiler
+(caching `Audio_VacuumController` per-frame + per-CO) was removed in v5.0.0
+and this issue is no longer mitigated by the mod.
 
 **Recommended upstream fix:** Cache the `Audio_VacuumController` reference in a
 field on `CondOwner` on `Awake()` / `OnEnable()`. Or expose it via a
@@ -167,8 +169,11 @@ temp_boGrav = aBOs.FirstOrDefault().Value;
 on `Dictionary` allocates an `IEnumerator<KeyValuePair>` every call. This runs
 for every ship every frame when no gravity BO is otherwise found.
 
-**Mod fix:** `Patch_UpdateShip_DefaultGravBO` caches the default BO in a
-Postfix when `temp_boGrav` is null, recomputing only when `aBOs.Count` changes.
+**Mod fix:** `Patch_UpdateShip_FirstBO_NoAlloc` is a transpiler that replaces
+the `FirstOrDefault().Value` sequence with a direct struct enumerator over
+`aBOs` (no heap allocation). This is **not** a cache — it simply eliminates the
+`IEnumerator<KeyValuePair<string,BodyOrbit>>` boxing by using
+`Dictionary<string,BodyOrbit>.Enumerator` (a struct) and reading `.Current.Value`.
 
 **Recommended upstream fix:** Keep a `BodyOrbit _defaultBO` field on
 `StarSystem`, set whenever `aBOs` is mutated (add/remove). Or use a
@@ -205,8 +210,11 @@ from conditional loot tables that ship without the referenced interaction.
 `Texture2D.ReadPixels`, then `EncodeToPNG()` — all on the main thread, before
 the threaded save job starts. 100–500ms freeze per save.
 
-**Mod fix:** `Patch_SaveScreenShot_Skip` returns `null` from the Prefix,
-skipping the capture entirely.
+**Mod fix:** `Patch_SaveScreenShot_Defer` does not skip the capture — it
+defers it. The Prefix captures the request and starts a coroutine that performs
+`ReadPixels` + `EncodeToPNG` across multiple Unity frames, yielding between
+phases so the main thread is not blocked for the full 100–500ms. The threaded
+save job is no longer gated on a synchronous screenshot.
 
 **Recommended upstream fix:** Move the `ReadPixels` + `EncodeToPNG` into the
 background save thread. `ReadPixels` must run on the render thread (or main),
@@ -221,7 +229,10 @@ autosaves entirely.
 **Problem:** Iterates crew, captures each portrait to a `Texture2D`, encodes
 to PNG, returns a `List<Texture2D>`. All main-thread. Scales with crew size.
 
-**Mod fix:** `Patch_SaveCrewPortraits_Skip` returns `null` from the Prefix.
+**Mod fix:** `Patch_SaveCrewPortraits_Defer` defers the capture into a
+coroutine (same pattern as 3.1) instead of skipping it. Portraits are
+captured and encoded across multiple frames so the main thread is not blocked
+for the full 200–1000ms.
 
 **Recommended upstream fix:** Same as 3.1. Or, better, store the last-captured
 portrait hash on the crew CondOwner and only re-capture when the visual
@@ -302,10 +313,13 @@ each. A child orbit reads `boParent.vPos` to compute its own position.
 **Problem:** If the game ever parallelizes this loop naively, a child may read
 a stale parent position mid-tick, producing visible orbital jitter.
 
-**Mod fix:** `Patch_StarSystemUpdate` groups orbits by topological depth
-(walk `boParent` chain to root, count = depth). Parents are processed first
-(level 0 = star, level 1 = planets, level 2 = moons, ...). Within a level,
-orbits are independent and safe to parallelize.
+**Mod fix:** `Patch_StarSystemUpdate` no longer parallelizes the orbit update.
+The parallel topological-depth grouping was **removed in v5.0.0** because a
+race condition on `boParent` fields (parent position read mid-tick by a child)
+produced visible orbital jitter. The patch now only does per-frame timing
+instrumentation and `GameLoaded` detection — the orbit loop runs in its
+original sequential order. The topological-depth rationale below is preserved
+as a recommendation for any future upstream parallelization attempt.
 
 **Recommended upstream fix:** Add a `int Depth` field to `BodyOrbit`, computed
 when the orbit is attached to a parent. In `StarSystem.Update`, sort by depth
@@ -362,8 +376,15 @@ checks per crew member. Skills only change on level-up, role change, or
 unconsciousness — but the method runs every ship every frame, including
 during 16× time accel where 16 sim substeps happen per real frame.
 
-**Mod fix:** `Patch_UpdateCrewSkills_Throttle` skips the method when
-`Time.timeScale > 1f` and less than 5 sim-seconds have elapsed since last run.
+**Mod fix:** `Patch_Ship_UpdateCrewSkills_NoAlloc` is a transpiler that
+eliminates the per-call allocations inside `UpdateCrewSkills` (boxing of
+`GetPeople()` enumerators + `HasCond` lookup wrappers) by replacing them with
+direct struct enumerators and reused local scratch — **not** a throttle. The
+method still runs every frame as in the shipped code; the patch only removes
+the GC pressure. The previous `Patch_UpdateCrewSkills_Throttle` (which skipped
+the method during `Time.timeScale > 1f`) was **removed in v5.0.0** because it
+froze skill updates during x4 time accel, causing crew skill state to drift
+out of sync.
 
 **Recommended upstream fix:** Move `UpdateCrewSkills` inside the
 `bPoolShipUpdates` guard (it's already skipped during ship edit). Or gate it
@@ -425,11 +446,11 @@ the entire orbit history each step.
 station with 5000+ COs, this dominates frame time. Most COs are offscreen or
 unchanged.
 
-**Mod fix (partial):** A bucket-based deferral system is wired up
-(`RegisterForVisualUpdate` + `ProcessVisualBucket` in `Plugin.cs`) that
-round-robins COs through selected/visible/offscreen intervals. The transpiler
-that would route `UpdateManual` into the bucket currently has an IL compile
-error and is **not registered** — see section 10.4.
+**Mod fix:** None. The visual deferral bucket (`RegisterForVisualUpdate` +
+`ProcessVisualBucket` in `Plugin.cs`, plus the `Patch_UpdateManual_VisualDeferral`
+transpiler) was **removed entirely in v5.0.0** — the transpiler never compiled
+(see historical note in section 10.4) and the bucket processed nothing because
+no routing Prefix was ever registered. This issue is not mitigated by the mod.
 
 **Recommended upstream fix:** Add a visibility flag to `CondOwner`. Only call
 `RefreshAnim` + `UpdateStats` + `VisualizeOverlays` when:
@@ -581,11 +602,13 @@ Match the original flow exactly; only change the yield cadence (see 4.2).
 a branch target inside the method. The replacement produces invalid IL.
 
 **Lesson:** Transpilers that cut method bodies are fragile. Use a Prefix that
-returns `false` and calls the deferral method instead. The bucket system is
-wired up and ready — only the routing Prefix is missing.
+returns `false` and calls the deferral method instead. The bucket system was
+wired up and ready — only the routing Prefix was missing.
 
-**Current status:** Patch is **not registered**. The bucket processes COs
-that are added via `RegisterForVisualUpdate` but nothing currently adds them.
+**Current status:** The entire visual deferral bucket (`RegisterForVisualUpdate`,
+`ProcessVisualBucket`, and this transpiler) was **removed in v5.0.0**. The
+transpiler never compiled and the bucket processed nothing. See section 7.1
+for the current state of `UpdateManual` mitigation.
 
 ### 10.5 `Coroutines` and `Postfix` timing
 
@@ -609,29 +632,30 @@ Ryzen 5 3600, Unity 6000.3.10 Mono:
 | Fix | Frame time reduction | GC reduction |
 |---|---|---|
 | `ToList` elimination (1.1, 1.2) | 0.4 ms/frame | ~150 KB/sec |
-| Component caching (1.3, 1.4) | 0.8 ms/frame | ~40 KB/sec |
+| Component caching (1.3, 1.4) — **removed in v5.0.0** | — (was 0.8 ms/frame) | no longer mitigated |
 | `aTickersTemp` pre-size (1.5) | 0.1 ms/frame | ~20 KB/sec |
 | `FirstOrDefault` indexer (2.1) | 0.3 ms/frame | ~10 KB/sec |
-| Default BO cache (2.2) | 0.2 ms/frame | ~5 KB/sec |
+| Default BO no-alloc enumerator (2.2) | 0.2 ms/frame | ~5 KB/sec |
 | Interaction cache (2.3) | 0.5 ms/frame | ~30 KB/sec |
-| Save screenshot skip (3.1) | — | 100–500 ms per save |
-| Save crew portraits skip (3.2) | — | 200–1000 ms per save |
+| Save screenshot defer (3.1) | — | 100–500 ms per save (now background) |
+| Save crew portraits defer (3.2) | — | 200–1000 ms per save (now background) |
 | Sparks flicker cache (3.3) | 0.3 ms/frame | ~15 KB/sec |
 | Threaded saves (4.1) | — | 2–5 sec per save (now background) |
 | Batched save load (4.2) | — | 1.5 sec → 0.2 sec loading screen |
-| UpdateCrewSkills throttle (6.1) | 1.2 ms/frame during FFWD | — |
+| UpdateCrewSkills no-alloc (6.1) — throttle **removed in v5.0.0** | — (throttle was 1.2 ms/frame FFWD) | GC only, no frame-time gain |
 | DamageOverTime skip (6.3) | 0.4 ms/frame | — |
 | Debug.Log suppress (8.1) | 2–5 ms/frame | ~500 KB/sec |
 | Memory leak fixes (9.1–9.3) | — | eliminates 10–13 sec GC pauses |
 
-**Total:** ~6 ms/frame reduction in steady-state, plus elimination of all
-save/loading freezes and GC spikes.
+**Total:** ~4 ms/frame reduction in steady-state (down from ~6 ms/frame in
+v4.3.0 — component caching and `UpdateCrewSkills` throttle were removed),
+plus elimination of all save/loading freezes and GC spikes.
 
 ---
 
 ## Contact
 
-This document was produced alongside `OstronautsPerfOpt` v4.3.0. If any of
+This document was produced alongside `OstronautsPerfOpt` v5.0.0. If any of
 the upstream fixes are applied, the corresponding mod patch becomes a no-op
 (safe to leave installed). The mod logs `[OK] {PatchName}` per applied patch
 on startup — check the BepInEx log to see which patches are active.

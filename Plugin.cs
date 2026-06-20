@@ -17,31 +17,31 @@ using System.Threading;
 namespace OstronautsPerfOpt
 {
     [BepInPlugin("com.ostronauts.perfopt",
-        "Ostronauts Performance Optimizer", "4.4.0")]
+        "Ostronauts Performance Optimizer", "5.0.0")]
     public class PerfOptPlugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
         internal static bool GameLoaded;
+        internal static bool IsLoading;
 
         internal const bool CfgFirstOrDefault = true;
         internal const bool CfgInteractionCache = true;
         internal const float CfgMaxDeltaTime = 0.1f;
         internal const int CfgHeapExpansionMB = 128;
-        internal const int CfgMemCeilingMB = 3072;
+        internal const int CfgMemCeilingMB = 2048;
         internal const int CfgGCIntervalSec = 0;
         internal const int CfgMinFreeMB = 0;
+        internal const float CfgGCTriggerRatio = 0.70f;
+        internal const float CfgGradualGCIntervalSec = 30f;
         internal const bool CfgProfiling = true;
         internal const int CfgProfileIntervalSec = 5;
-        internal const bool CfgParallelOrbits = true;
-        internal const bool CfgParallelUpdateStats = true;
         internal const bool CfgParallelCleanupExpiry = true;
         internal const int CfgParallelMinBatch = 8;
         internal const bool CfgLowLatencyGC = true;
         internal const bool CfgEliminateToList = true;
-        internal const bool CfgCacheComponents = true;
         internal const bool CfgParallelLoading = true;
         internal const int CfgParallelLoadThreads = 4;
-        internal const int CfgSaveLoadBatchSize = 10;
+        internal const int CfgSaveLoadBatchSize = 0;
         internal const bool CfgEliminateAIAllocs = true;
         internal const bool CfgOptimizeTickers = true;
         internal const bool CfgThreadedSave = true;
@@ -95,6 +95,8 @@ namespace OstronautsPerfOpt
         public static int ComponentCacheHits;
         public static int TickerPreSized;
         public static int FirstOrDefaultSkipped;
+        public static int UpdateStatsSkipped;
+        public static int CondTempPreSized;
 
         public static long FrameAllocTotal;
         public static long AllocAdvanceSim;
@@ -135,6 +137,10 @@ namespace OstronautsPerfOpt
             Log.LogInfo($"[MONO] heap={GC.GetTotalMemory(false) / 1048576}MB (managed)");
             Log.LogInfo($"[THREADS] Available: {Environment.ProcessorCount}");
 
+            // SpikeProfiler: background stack sampling. Captures main-thread
+            // call stacks every 10ms. When a spike >200ms is detected in
+            // LateUpdate, dumps aggregated stack traces showing which
+            // methods consumed the frame time.
             try { SpikeProfiler.Start(); }
             catch (Exception ex)
             {
@@ -160,22 +166,35 @@ namespace OstronautsPerfOpt
                 typeof(Patch_UpdateICOsParallelPrepass),
                 typeof(Patch_StarSystemUpdate_ToList),
                 typeof(Patch_CollisionManager_ToList),
-                typeof(Patch_CrewSim_CacheComponents),
                 typeof(Patch_ParallelLoad),
                 typeof(Patch_DoLoadGame_BatchYields),
+                typeof(Patch_DoLoadGame_FastOrphanScan),
                 typeof(Patch_UpdateICOs_NoCopy),
                 typeof(Patch_DebugLog_Suppress),
                 typeof(Patch_DebugLogWarning_Passthrough),
                 typeof(Patch_DebugLogError_Passthrough),
                 typeof(Patch_SaveGame_Threaded),
-                typeof(Patch_UpdateShip_DefaultGravBO),
-                typeof(Patch_SaveScreenShot_Skip),
-                typeof(Patch_SaveCrewPortraits_Skip),
+                typeof(Patch_SaveScreenShot_Defer),
+                typeof(Patch_SaveCrewPortraits_Defer),
                 typeof(Patch_Sparks_CacheFlicker),
                 typeof(Patch_DamageOverTime_Skip),
+                typeof(Patch_UpdateShip_FirstBO_NoAlloc),
+                typeof(Patch_UpdateManual_NoTickerLog),
                 typeof(Patch_InstallStart_KeepInventoryOpen),
+                typeof(Patch_GetAvailActions_KeepClickable),
+                typeof(Patch_GetMove2_Cache),
+                typeof(Patch_EndTurn_Throttle),
+                typeof(Patch_LogHandler_IsDuplicate),
+                typeof(Patch_LogHandler_TrimLog),
+                typeof(Patch_InteractionObjectTracker_RemoveNulls),
+                typeof(Patch_Ship_UpdateCrewSkills_NoAlloc),
+                typeof(Patch_EndTurn_PreSizeCondsTemp),
+                typeof(Patch_CheckCollisions_DockedRegIDs),
+                typeof(Patch_DeliverMessages_NoAlloc),
+                typeof(Patch_OnApplicationQuit_FastExit),
+                typeof(Patch_SkipDuplicateStationSpawn),
                 typeof(Patch_ClaimTaskDirect_QueueStack),
-                typeof(Patch_GetAvailActions_KeepClickable)
+                typeof(Patch_AICancelAll_StackSkip)
             };
 
             for (int i = 0; i < patches.Length; i++)
@@ -192,7 +211,19 @@ namespace OstronautsPerfOpt
                 }
             }
 
-            Log.LogInfo($"=== PerfOpt v4.4.0 ({ok}/{patches.Length} patches) ===");
+            // Register loading profiler patches directly (can't use Postfix on Awake
+            // because Awake only runs once and Postfix only applies to future calls)
+            try
+            {
+                LoadingProfiler.RegisterPatches(harmony);
+                Log.LogInfo("  [OK] LoadingProfiler patches registered");
+            }
+            catch (Exception ex)
+            {
+                Log.LogWarning($"  [FAIL] LoadingProfiler: {ex.Message}");
+            }
+
+            Log.LogInfo($"=== PerfOpt v5.0.0 ({ok}/{patches.Length} patches) ===");
             Log.LogInfo("  All optimizations hardcoded ON. No config.");
         }
 
@@ -204,6 +235,9 @@ namespace OstronautsPerfOpt
             SimStepsThisFrame = 0;
             _frameSW.Reset();
             _frameSW.Start();
+
+            if (Input.GetKeyDown(KeyCode.Insert))
+                _overlayVisible = !_overlayVisible;
 
             if (GameLoaded && !_heapExpanded)
             {
@@ -228,6 +262,9 @@ namespace OstronautsPerfOpt
             _totalFrameMs += ms;
             if (ms > _worstFrameMs)
                 _worstFrameMs = ms;
+
+            // Skip all profiling on main menu (no game loaded)
+            if (!GameLoaded) return;
 
             bool paused = false;
             try
@@ -255,15 +292,21 @@ namespace OstronautsPerfOpt
                 SB.Length = 0;
                 SB.Append("[SPIKE] ").Append(ms.ToString("F1")).Append("ms");
                 if (gcDelta > 0)
-                    SB.Append(" [GCx").Append(gcDelta).Append("]");
+                {
+                    int gen1Total = GC.CollectionCount(1);
+                    int gen2Total = GC.CollectionCount(2);
+                    SB.Append(" [GCx").Append(gcDelta)
+                      .Append(" g1=").Append(gen1Total)
+                      .Append(" g2=").Append(gen2Total).Append("]");
+                }
                 SB.Append(" Sim:").Append(SimStepsThisFrame);
+                SB.Append(" Alloc:").Append((fAlloc / 1024).ToString()).Append("KB");
+                if (IsLoading) SB.Append(" [LOADING]");
                 if (paused) SB.Append(" [PAUSED]");
                 Log.LogWarning(SB.ToString());
 
-                if (ms > 200f && SpikeProfiler.HasSamples)
-                {
+                if (ms > 200f)
                     SpikeProfiler.DumpAndClear(SB.ToString());
-                }
             }
 
             if (Time.realtimeSinceStartup - _lastDiag >= 5f)
@@ -278,12 +321,24 @@ namespace OstronautsPerfOpt
             if (_reportTimer >= CfgProfileIntervalSec)
             {
                 _reportTimer = 0f;
-                LogReport();
+                BuildOverlayText();
+                ResetCounters();
             }
         }
 
         private void CheckMemoryCeiling()
         {
+            if (IsLoading) return;
+
+            bool paused = false;
+            try
+            {
+                if (_fTimeCoeffPause != null)
+                    paused = (float)_fTimeCoeffPause.GetValue(null) == 0f;
+            }
+            catch { }
+            if (paused) return;
+
             float now = Time.realtimeSinceStartup;
             float elapsed = now - _lastForcedGC;
 
@@ -295,6 +350,23 @@ namespace OstronautsPerfOpt
             long ceiling = _effectiveCeilingMB > 0
                 ? _effectiveCeilingMB : CfgMemCeilingMB;
             int interval = CfgGCIntervalSec;
+
+            long triggerThreshold = (long)(ceiling * CfgGCTriggerRatio);
+
+            if (ceiling > 0 && heapMB > triggerThreshold
+                && heapMB <= ceiling
+                && elapsed >= CfgGradualGCIntervalSec)
+            {
+                try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; }
+                catch { }
+                GC.Collect(0, GCCollectionMode.Optimized, false);
+                _lastForcedGC = now;
+                _forcedGCCount++;
+                long gradAfterMB = GC.GetTotalMemory(false) / 1048576;
+                Log.LogInfo($"[GC-GRAD] #{_forcedGCCount} M:{heapMB}>{gradAfterMB}MB" +
+                    $" trigger@{triggerThreshold}MB ceiling={ceiling}MB (gen0)");
+                return;
+            }
 
             bool shouldGC = false;
             string reason = "";
@@ -405,6 +477,12 @@ namespace OstronautsPerfOpt
 
         private void LogReport()
         {
+            // Disabled — perf data now shown in OnGUI overlay (toggle with INSERT)
+            // Kept for potential future debug use
+        }
+
+        private void BuildOverlayText()
+        {
             long mem = GC.GetTotalMemory(false);
             int gc = GC.CollectionCount(0);
             float avgMs = _frameCount > 0 ? _totalFrameMs / _frameCount : 0;
@@ -413,74 +491,52 @@ namespace OstronautsPerfOpt
             int active = _frameCount - _pausedFrames;
             float avgSim = _frameCount > 0 ? (float)SimStepsTotal / _frameCount : 0;
 
-            SB.Length = 0;
-            SB.Append($"\n=== PERF v4.4.0 ({CfgProfileIntervalSec}s) ===\n");
-            SB.Append($"  Fr: {_frameCount} ({active}act)");
-            SB.Append($" FPS:{fps:F0}");
-            SB.Append($" Worst:{_worstFrameMs:F1}ms\n");
-            SB.Append($"  Sp:{_spikeCount} ({_gcSpikeCount}gc)");
-            SB.Append($" GC:{totalGC}");
-            SB.Append($" M:{mem / 1048576.0:F0}MB");
-            SB.Append($" NoGC:{CNoGC}\n");
-            SB.Append($"  Sim:{SimStepsTotal} ({avgSim:F1}/f) Max:{SimStepsMax}\n");
-
-            AppendTiming("  AS ", TAdvanceSim, CAdvanceSim);
-            AppendTiming("  ICO", TICO, CICO);
-            AppendTiming("  ET ", TEndTurn, CEndTurn);
-            AppendTiming("  GM2", TGetMove2, CGetMove2);
-            AppendTiming("  GW ", TGetWork, CGetWork);
-            AppendTiming("  PCL", TParseCL, CParseCL);
-            AppendTiming("  CU ", TCleanup, CCleanup);
-            AppendTiming("  US ", TUpdateStats, CUpdateStats);
-            AppendTiming("  SS ", TStarSys, CStarSys);
-            AppendTiming("  ORB", TOrbits, COrbits);
-
-            if (ToListEliminated > 0)
-                SB.Append($"  ToListSkip:{ToListEliminated}\n");
-            if (ComponentCacheHits > 0)
-                SB.Append($"  CompCache:{ComponentCacheHits}\n");
-            if (TickerPreSized > 0)
-                SB.Append($" TickPre:{TickerPreSized}");
-            if (FirstOrDefaultSkipped > 0)
-                SB.Append($" FOSkip:{FirstOrDefaultSkipped}");
-
-            if (IACacheHits > 0)
-                SB.Append($" ia:{IACacheHits}");
-            if (ParallelBatchesRun > 0)
-                SB.Append($" par:{ParallelBatchesRun}");
-
-            SB.Append($"\n  Alloc:{FrameAllocTotal / 1024.0:F0}KB" +
-                $" ({FrameAllocTotal / (CfgProfileIntervalSec * 1024.0):F0}KB/s)");
-
+            var sb = new StringBuilder(2048);
+            sb.Append($"PerfOpt v5.0 | Fr:{_frameCount} ({active}act) FPS:{fps:F0} Worst:{_worstFrameMs:F1}ms\n");
+            sb.Append($"Sp:{_spikeCount} ({_gcSpikeCount}gc) GC:{totalGC} M:{mem / 1048576.0:F0}MB Sim:{SimStepsTotal} ({avgSim:F1}/f) Max:{SimStepsMax}\n");
+            sb.Append($"AdvSim:{FmtTiming(TAdvanceSim, CAdvanceSim)} ");
+            sb.Append($"ICO:{FmtTiming(TICO, CICO)} ");
+            sb.Append($"EndTurn:{FmtTiming(TEndTurn, CEndTurn)}\n");
+            sb.Append($"GetMove2:{FmtTiming(TGetMove2, CGetMove2)} ");
+            sb.Append($"GetWork:{FmtTiming(TGetWork, CGetWork)}\n");
+            sb.Append($"ParseCL:{FmtTiming(TParseCL, CParseCL)} ");
+            sb.Append($"Cleanup:{FmtTiming(TCleanup, CCleanup)}\n");
+            sb.Append($"UpdStats:{FmtTiming(TUpdateStats, CUpdateStats)} ");
+            sb.Append($"StarSys:{FmtTiming(TStarSys, CStarSys)} ");
+            sb.Append($"Orbits:{FmtTiming(TOrbits, COrbits)}\n");
+            sb.Append($"Alloc:{FrameAllocTotal / 1024.0:F0}KB ({FrameAllocTotal / (CfgProfileIntervalSec * 1024.0):F0}KB/s)");
             long other = FrameAllocTotal - AllocAdvanceSim - AllocStarSys;
-            SB.Append($"\n  A.AS:{AllocAdvanceSim / 1024.0:F0}KB" +
-                $" A.SS:{AllocStarSys / 1024.0:F0}KB" +
-                $" A.Oth:{other / 1024.0:F0}KB");
-            SB.Append($"\n  AS-breakdown ET:{AllocEndTurn / 1024.0:F0}KB" +
-                $" GM2:{AllocGetMove2 / 1024.0:F0}KB" +
-                $" GW:{AllocGetWork / 1024.0:F0}KB" +
-                $" PCL:{AllocParseCL / 1024.0:F0}KB" +
-                $" CU:{AllocCleanup / 1024.0:F0}KB" +
-                $" US:{AllocUpdateStats / 1024.0:F0}KB");
-
-            if (_heapExpandResult.Length > 0)
-                SB.Append($"\n  Heap: {_heapExpandResult}");
-
+            sb.Append($" AS:{AllocStarSys / 1024.0:F0}KB ET:{AllocEndTurn / 1024.0:F0}KB GM2:{AllocGetMove2 / 1024.0:F0}KB O:{other / 1024.0:F0}KB\n");
+            if (ToListEliminated > 0) sb.Append($"ToListSkip:{ToListEliminated} ");
+            if (ComponentCacheHits > 0) sb.Append($"CompCache:{ComponentCacheHits} ");
+            if (IACacheHits > 0) sb.Append($"IA:{IACacheHits} ");
+            if (ParallelBatchesRun > 0) sb.Append($"Par:{ParallelBatchesRun} ");
+            if (UpdateStatsSkipped > 0) sb.Append($"UpdSkip:{UpdateStatsSkipped} ");
+            if (TickerPreSized > 0) sb.Append($"TickPre:{TickerPreSized} ");
+            if (CondTempPreSized > 0) sb.Append($"CondPre:{CondTempPreSized} ");
+            if (FirstOrDefaultSkipped > 0) sb.Append($"FODefault:{FirstOrDefaultSkipped}");
             if (_forcedGCCount > 0)
             {
-                long eCeil = _effectiveCeilingMB > 0
-                    ? _effectiveCeilingMB : CfgMemCeilingMB;
-                SB.Append($"\n  GC-Ceil: {_forcedGCCount}x forced" +
-                    $" cur:{mem / 1048576}/{eCeil}MB");
-                if (_effectiveCeilingMB > 0)
-                    SB.Append("(auto)");
+                long eCeil = _effectiveCeilingMB > 0 ? _effectiveCeilingMB : CfgMemCeilingMB;
+                sb.Append($"\nGC-Ceil:{_forcedGCCount}x cur:{mem / 1048576}/{eCeil}MB Lat:{GCSettings.LatencyMode}");
             }
 
-            SB.Append($"\n  GCLatency: {GCSettings.LatencyMode}");
+            _overlayText = sb.ToString();
+        }
 
-            SB.Append("\n=================");
-            Log.LogInfo(SB.ToString());
+        private static string FmtTiming(long ticks, int count)
+        {
+            if (count == 0) return "--";
+            float ms = (float)((double)ticks / Stopwatch.Frequency * 1000.0);
+            float avg = ms / count;
+            string avgStr = avg < 1f ? avg.ToString("F3") : avg.ToString("F1");
+            return $"{count}x{ms:F0}ms({avgStr}ms)";
+        }
 
+        private void ResetCounters()
+        {
+            long mem = GC.GetTotalMemory(false);
+            int gc = GC.CollectionCount(0);
             _memAtReport = mem;
             _gcAtReport = gc;
             _frameCount = 0; _totalFrameMs = 0; _worstFrameMs = 0;
@@ -501,6 +557,8 @@ namespace OstronautsPerfOpt
             ParallelBatchesRun = 0;
             ToListEliminated = 0; ComponentCacheHits = 0;
             TickerPreSized = 0; FirstOrDefaultSkipped = 0;
+            UpdateStatsSkipped = 0;
+            CondTempPreSized = 0;
             FrameAllocTotal = 0;
             AllocAdvanceSim = 0; AllocStarSys = 0;
             AllocEndTurn = 0; AllocGetMove2 = 0; AllocGetWork = 0;
@@ -560,20 +618,30 @@ namespace OstronautsPerfOpt
             }
         }
 
-        private static readonly string[] _fpsLabels = new string[60];
-        private static int _fpsLabelIdx;
         private static float _fpsUpdateTimer;
         private static string _fpsDisplay = "";
+        private static string _overlayText = "";
         private static GUIStyle _fpsStyle;
+        private static GUIStyle _overlayStyle;
+        private static bool _overlayVisible = true;
 
         private void OnGUI()
         {
+            if (!_overlayVisible) return;
+            // Only render on repaint to avoid IMGUI overhead on layout/mouse events
+            if (Event.current.type != EventType.Repaint) return;
+
             if (_fpsStyle == null)
             {
                 _fpsStyle = new GUIStyle(GUI.skin.label);
                 _fpsStyle.fontSize = 14;
                 _fpsStyle.normal.textColor = new Color(1f, 1f, 0.4f, 0.9f);
                 _fpsStyle.alignment = TextAnchor.UpperRight;
+
+                _overlayStyle = new GUIStyle(GUI.skin.label);
+                _overlayStyle.fontSize = 12;
+                _overlayStyle.normal.textColor = new Color(0.8f, 1f, 0.8f, 0.9f);
+                _overlayStyle.alignment = TextAnchor.UpperLeft;
             }
 
             _fpsUpdateTimer += Time.unscaledDeltaTime;
@@ -584,12 +652,15 @@ namespace OstronautsPerfOpt
                 float worst = _worstFrameMs;
                 long mem = GC.GetTotalMemory(false) / (1024 * 1024);
                 _fpsDisplay = $"FPS:{fps:F0} Worst:{worst:F0}ms M:{mem}MB Sim:{SimStepsThisFrame}";
-                _frameCount = 0; _totalFrameMs = 0; _worstFrameMs = 0;
             }
 
-            float x = Screen.width - 220;
-            float y = 25;
-            GUI.Label(new Rect(x, y, 200, 20), _fpsDisplay, _fpsStyle);
+            // FPS line top-right
+            float w = Screen.width;
+            GUI.Label(new Rect(w - 220, 5, 210, 20), _fpsDisplay, _fpsStyle);
+
+            // Full overlay top-left
+            if (!string.IsNullOrEmpty(_overlayText))
+                GUI.Label(new Rect(5, 5, 700, 200), _overlayText, _overlayStyle);
         }
     }
 }

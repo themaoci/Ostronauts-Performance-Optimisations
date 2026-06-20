@@ -26,4 +26,4 @@
 
 **Fix:** Remove the `.ToList()` call.
 
-**Mod patches:** `Patch_SaveScreenShot_Skip` and `Patch_SaveCrewPortraits_Skip` skip the synchronous `RenderTexture` capture entirely (addressing the perf cost, not the `targetTexture` leak). `Patch_SaveGame_Threaded` forces `useThreading=true` for all saves. The sync `File.ReadAllBytes` on main thread and `GetSaveInfos` alloc churn are not yet patched.
+**Mod patches:** `Patch_SaveScreenShot_Defer` and `Patch_SaveCrewPortraits_Defer` defer the synchronous `RenderTexture` capture to a coroutine (returning immediately on the save frame, performing the capture + encode + file write on the next frame). The coroutine also restores `mainCamera.targetTexture = null` and destroys the `RenderTexture`/`Texture2D` in a `finally` block, fixing the `targetTexture` leak. `Patch_SaveGame_Threaded` forces `useThreading=true` for all saves. The sync `File.ReadAllBytes` on main thread and `GetSaveInfos` alloc churn are not yet patched.

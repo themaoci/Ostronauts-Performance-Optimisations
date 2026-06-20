@@ -19,3 +19,5 @@
 **Fix:** Guard with `if (AIShipManager.ShowDebugLogs)` (already used elsewhere in the same file, e.g. lines 597, 880) so the `Debug.Log` and its string concatenation only execute when explicitly enabled.
 
 **Mod patches:** `Patch_CollisionManager_ToList` replaces both `.ToList()` calls with reusable buffers. `Patch_DebugLog_Suppress` suppresses the `Debug.Log` info spam; `Patch_DebugLogWarning_Passthrough` / `Patch_DebugLogError_Passthrough` re-emit warnings/errors through BepInEx.
+
+**Also:** `Patch_CheckCollisions_DockedRegIDs` (Patches/Optimization/OptimizationPatches.cs) replaces the LINQ `select...ToList` in `CheckCollisions` with a reusable TLS `List<string>` buffer.

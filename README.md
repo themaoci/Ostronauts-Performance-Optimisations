@@ -7,7 +7,7 @@
 > _I was testing a new military-grade AI+CLI system while making this mod._
 _Releasing under: Do whatever you want, I want developers to read the notes and fix their game._
 
-[![Release](https://img.shields.io/badge/release-v4.4.0-blue)](../../releases)
+[![Release](https://img.shields.io/badge/release-v5.0.0-blue)](../../releases)
 [![Game](https://img.shields.io/badge/game-Ostranauts-9cf)](https://store.steampowered.com/app/1022980/Ostranauts/)
 [![BepInEx](https://img.shields.io/badge/BepInEx-5.4.x-orange)](https://github.com/BepInEx/BepInEx)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -32,18 +32,22 @@ addresses all of those without altering simulation outcomes.
 - Replaces `.Values.ToList()` in `StarSystem.Update` and
   `CollisionManager.CheckProjectileCollisions` with reusable `List<Ship>` buffers
   keyed by call site (one for ships, one for projectiles).
-- Caches `Canvas.scaleFactor` and `Audio_VacuumController` lookups per frame in
-  `CrewSim.Update` — the originals call `GetComponent<T>()` every frame per CO.
 - Pre-sizes `CrewSim.aTickersTemp` instead of letting `AddRange` grow the
   underlying array incrementally each frame.
+- Eliminates per-frame `IEnumerator` boxing in `CrewSim.UpdateICOs` by
+  overriding the method to copy directly from `UniqueList._list`.
+- Eliminates `aBOs.FirstOrDefault().Value` enumerator allocation in
+  `StarSystem.UpdateShip` via transpiler (no-alloc struct enumerator).
 
 ### Parallel simulation
-- `BodyOrbit.UpdateTime` runs on `Parallel.ForEach`, batched by **topological
-  depth level** so parent orbits always process before their children (avoids
-  reading a parent's stale `vPos` mid-tick).
-- `CondOwner.UpdateStats` and `dictRecentlyTried` expiry run in a prepass inside
+- `CondOwner.dictRecentlyTried` expiry runs in a prepass inside
   `CrewSim.UpdateICOs` — before the main loop touches the tickers — using
   thread-local key buffers to avoid per-call allocation.
+  (`Patch_UpdateICOsParallelPrepass` + `Patch_CleanupExpire`)
+- The `UpdateICOs` body itself is replaced with a zero-boxing override
+  that copies directly from `UniqueList<CondOwner>`'s internal `_list`
+  field — vanilla `AddRange(aTickers)` boxed the struct `List.Enumerator`
+  via the `IEnumerator<T>` interface return.
 
 ### Parallel loading
 - Ship JSON files parse across N threads during save load and initial mod data
@@ -62,8 +66,12 @@ addresses all of those without altering simulation outcomes.
   seconds.
 - The synchronous `RenderTexture` capture + `EncodeToPNG` in
   `LoadManager.SaveScreenShot` and the crew portrait capture in
-  `LoadManager.SaveCrewPortraits` are skipped (each was 100–500ms of main-thread
-  work per save).
+  `LoadManager.SaveCrewPortraits` are **deferred to a coroutine** (each was
+  100–500ms of main-thread work per save). The Prefix returns immediately on
+  the save frame, yields one frame, then performs the capture + encode + file
+  write and cleans up the textures. The save-list UI reads `screenshot.png`
+  from disk later, so returning `null` for the in-memory `_loadedSave.ScreenShot`
+  field is safe.
 
 ### Debug.Log suppression
 - The game issues hundreds of `Debug.Log(string)` calls per frame during
@@ -76,12 +84,15 @@ addresses all of those without altering simulation outcomes.
 - `Ship.Sparks` is skipped entirely when `Time.timeScale >= 4f` — spark
   particles are invisible during fast-forward travel and the game was spawning
   them 16× per real second at max speed.
-- `Ship.UpdateCrewSkills` is throttled to once per ~5 sim-seconds during time
-  acceleration. Skills only change on level-up, role change, or
-  unconsciousness — safe to skip during travel.
 - `Ship.DamageOverTime` is skipped entirely when
   `StarSystem.fEpoch - fLastWearEpoch < 300`. The method is called every ship
   every frame but only acts when 300 sim-seconds have elapsed.
+- `Ship.UpdateCrewSkills` is **not** throttled — it sets static fields
+  (`WeaponsSystem.fRangeModGunner`, `fFuelEfficiencyMod`) reflecting per-ship
+  crew state. Throttling per-ship with a shared timestamp would corrupt these
+  values. Instead, the per-call `GetPeople()` List allocation is eliminated
+  (`Patch_Ship_UpdateCrewSkills_NoAlloc`), leaving the method cheap enough to
+  run every frame.
 
 ### Memory-leak fixes
 - The original optimizer design (v4.1) pre-allocated a `byte[]` block to "warm"
@@ -108,14 +119,11 @@ addresses all of those without altering simulation outcomes.
   single generation-0 sweep — never a full `GC.Collect()`.
 
 ### Visual deferral bucket
-- **Removed in v4.4.** The `Patch_UpdateManual_VisualDeferral` transpiler
-  had an IL compile error (see Developer_Notes §10.4) and was omitted from
-  the patch registry, but `CfgVisualDeferral=true` still gated the
-  `Patch_UpdateICOsParallelPrepass` `UpdateStats` branch — risking a
-  double-`UpdateStats` invocation per CondOwner per frame. The entire
-  feature (transpiler, bucket, `ProcessVisualBucket`, `RegisterForVisualUpdate`,
-  and the prepass `doStats` branch) is removed. `UpdateManual` now runs
-  `RefreshAnim` + `UpdateStats` + `VisualizeOverlays` inline as in vanilla.
+- **Removed.** The `Patch_UpdateManual_VisualDeferral` transpiler had an IL
+  compile error and the entire feature (transpiler, bucket,
+  `ProcessVisualBucket`, `RegisterForVisualUpdate`, and the prepass `doStats`
+  branch) is gone. `UpdateManual` now runs `RefreshAnim` + `UpdateStats` +
+  `VisualizeOverlays` inline as in vanilla.
 
 ### FPS overlay + spike profiler
 - A top-right `OnGUI` label shows `FPS / Worst-frame-ms / managed-MB / Sim`
@@ -124,9 +132,6 @@ addresses all of those without altering simulation outcomes.
   main-thread stack samples (aggregated by deepest method) to the BepInEx log.
   Sampling uses the Mono-internal `StackTrace(Thread, bool)` constructor via
   reflection — a background `ThreadPriority.Highest` thread takes 10 ms samples.
-  (v4.4.0: the sampler is now actually started in `Awake()` — v4.3.0 called
-  `Stop()` in `OnDestroy()` but never `Start()`, so the entire feature was
-  dead code and spikes produced zero stack samples.)
 - Per-method timing for `AdvanceSim`, `UpdateICOs`, `EndTurn`, `GetMove2`,
   `GetWork`, `ParseCondLoot`, `Cleanup`, `UpdateStats`, `StarSystem.Update`,
   and orbit updates is aggregated every 5 seconds, along with per-method
@@ -139,7 +144,7 @@ addresses all of those without altering simulation outcomes.
 
 ## Install
 
-1. Download `OstronautsPerfOpt-v4.4.0.zip` from the
+1. Download `OstronautsPerfOpt-v5.0.0.zip` from the
    [latest release](../../releases/latest).
 2. Extract `OstronautsPerfOpt.dll` into
    `<Ostranauts>\BepInEx\plugins\`.
@@ -191,7 +196,7 @@ game installed), set `GameDir` to any writable folder and copy the resulting
 
 ## Patch inventory
 
-### Performance patches (1–26)
+### Performance patches
 
 | # | Patch | Target | Effect |
 |---|---|---|---|
@@ -201,42 +206,64 @@ game installed), set `GameDir` to any writable folder and copy the resulting
 | 4 | `Patch_GetMove2` | `CondOwner.GetMove2` | Timing observation |
 | 5 | `Patch_GetWork` | `CondOwner.GetWork` | Timing observation |
 | 6 | `Patch_ParseCondLoot` | `CondOwner.ParseCondLoot` | Timing observation |
-| 7 | `Patch_StarSystemUpdate` | `StarSystem.Update` | Parallel orbit `UpdateTime` |
+| 7 | `Patch_StarSystemUpdate` | `StarSystem.Update` | Timing observation + `GameLoaded` detection |
 | 8 | `Patch_Cleanup` | `CondOwner.Cleanup` | Timing observation |
-| 9 | `Patch_FirstOrDefault` | `UniqueList<CondOwner>.FirstOrDefault` | Direct indexer `[0]` |
+| 9 | `Patch_FirstOrDefault` | `UniqueList<CondOwner>.FirstOrDefault` | Direct indexer `[0]` (no enumerator) |
 | 10 | `Patch_UpdateStats` | `CondOwner.UpdateStats` | Timing observation |
 | 11 | `Patch_SuppressInteractionLog` | `DataHandler.GetInteraction` | Bounded missing-key cache |
 | 12 | `Patch_CleanupExpire` | `CondOwner.Cleanup` | TLS expiry buffers + `new List<string>(Keys)` transpiler |
 | 13 | `Patch_UpdateICOsParallelPrepass` | `CrewSim.UpdateICOs` | Parallel cleanup-expiry prepass |
 | 14 | `Patch_StarSystemUpdate_ToList` | `StarSystem.Update` | Reusable ship buffer |
 | 15 | `Patch_CollisionManager_ToList` | `CollisionManager.CheckProjectileCollisions` | Reusable ship + projectile buffers |
-| 16 | `Patch_CrewSim_CacheComponents` | `CrewSim.Update` | Cache Canvas + VacuumController |
-| 17 | `Patch_ParallelLoad` | `LoadManager.LoadDataHandlerDelegates` | Parallel ship JSON parse |
-| 18 | `Patch_DoLoadGame_BatchYields` | `CrewSim.LoadGame` | Batched coroutine yields |
-| 19 | `Patch_UpdateICOs_NoCopy` | `CrewSim.UpdateICOs` | Pre-size `aTickersTemp` |
+| 16 | `Patch_ParallelLoad` | `LoadManager.LoadDataHandlerDelegates` | Parallel ship JSON parse |
+| 17 | `Patch_DoLoadGame_BatchYields` | `CrewSim.LoadGame` | Batched coroutine yields |
+| 18 | `Patch_DoLoadGame_FastOrphanScan` | `CrewSim.DoLoadGame` | Transpiler: `aShips.Any()` → `HashSet.Contains()` (O(N×M)→O(N+M)) |
+| 19 | `Patch_UpdateICOs_NoCopy` | `CrewSim.UpdateICOs` | Full override: copy from `UniqueList._list` directly (no `IEnumerator` boxing) |
 | 20 | `Patch_DebugLog_Suppress` | `Debug.Log(string)` | Suppress info spam |
 | 21 | `Patch_DebugLogWarning_Passthrough` | `Debug.LogWarning(string)` | Re-emit via BepInEx so crash-adjacent entries flush |
 | 22 | `Patch_DebugLogError_Passthrough` | `Debug.LogError(string)` | Re-emit via BepInEx so crash-adjacent entries flush |
 | 23 | `Patch_SaveGame_Threaded` | `LoadManager.SaveGame` | Force `useThreading=true` |
-| 24 | `Patch_UpdateShip_DefaultGravBO` | `StarSystem.UpdateShip` | Cache default gravity BO |
-| 25 | `Patch_SaveScreenShot_Skip` | `LoadManager.SaveScreenShot` | Skip `RenderTexture` capture |
-| 26 | `Patch_SaveCrewPortraits_Skip` | `LoadManager.SaveCrewPortraits` | Skip portrait capture |
-| 27 | `Patch_Sparks_CacheFlicker` | `Ship.Sparks` | Cache flicker; skip at 4× time |
-| 28 | `Patch_DamageOverTime_Skip` | `Ship.DamageOverTime` | Skip when not due (300s gate) |
+| 24 | `Patch_SaveScreenShot_Defer` | `LoadManager.SaveScreenShot` | Defer `RenderTexture` capture to coroutine |
+| 25 | `Patch_SaveCrewPortraits_Defer` | `LoadManager.SaveCrewPortraits` | Defer portrait capture to coroutine |
+| 26 | `Patch_Sparks_CacheFlicker` | `Ship.Sparks` | Cache flicker; skip at 4× time |
+| 27 | `Patch_DamageOverTime_Skip` | `Ship.DamageOverTime` | Skip when not due (300s gate) |
+| 28 | `Patch_UpdateShip_FirstBO_NoAlloc` | `StarSystem.UpdateShip` | Transpiler: `aBOs.FirstOrDefault().Value` → no-alloc struct enumerator |
+| 29 | `Patch_UpdateManual_NoTickerLog` | `CondOwner.UpdateManual` | Transpiler: remove `Debug.Log(string.Concat(new string[]))` on ticker overflow |
+| 30 | `Patch_LogHandler_IsDuplicate` | `LogHandler.IsDuplicate` | `LastIndexOf`+`IndexOf` instead of `Split` (zero alloc) |
+| 31 | `Patch_LogHandler_TrimLog` | `LogHandler.TrimLog` | Manual `IndexOf` counting instead of `Split` |
+| 32 | `Patch_InteractionObjectTracker_RemoveNulls` | `InteractionObjectTracker.RemoveNullsFromDictionary` | In-place null-key removal (no `ToDictionary` rebuild) |
+| 33 | `Patch_Ship_UpdateCrewSkills_NoAlloc` | `Ship.UpdateCrewSkills` | Iterate `aPeople` directly (no `GetPeople()` List alloc) |
+| 34 | `Patch_EndTurn_PreSizeCondsTemp` | `CondOwner.EndTurn` | Pre-size `aCondsTemp.Capacity` before `AddRange(aCondsTimed)` |
+| 35 | `Patch_CheckCollisions_DockedRegIDs` | `CollisionManager.CheckCollisions` | Transpiler: reusable TLS `List<string>` buffer |
+| 36 | `Patch_DeliverMessages_NoAlloc` | `StarSystem.DeliverMessages` | Parallel TLS key/message lists (no `List<Tuple>` allocs) |
+| 37 | `Patch_OnApplicationQuit_FastExit` | `CrewSim.OnApplicationQuit` | `Environment.Exit(0)` after quit handler (skip slow Unity teardown) |
+| 38 | `Patch_SkipDuplicateStationSpawn` | `StarSystem.Init` | Null `aSpawnStations` when ships already in `aShips` |
 
-### Gameplay bug fixes (29–31)
+### Gameplay bug fixes
 
 | # | Patch | Target | Effect |
 |---|---|---|---|
-| 29 | `Patch_InstallStart_KeepInventoryOpen` | `CrewSim.InstallStart` | Neutralize `ToggleInventory` — inventory stays open during install |
-| 30 | `Patch_ClaimTaskDirect_QueueStack` | `WorkManager.ClaimTaskDirect` | Stack orders on back of queue instead of interrupting; hold Left Alt for vanilla interrupt; randomized 500–1250ms human-like settle delay when stacking behind a non-empty queue |
-| 31 | `Patch_GetAvailActions_KeepClickable` | `CrewSim.GetAvailActionsForCO` | Re-enable all tooltip actions while a task runs (obsolete `IsClickable=!flag` gating) |
+| 39 | `Patch_InstallStart_KeepInventoryOpen` | `CrewSim.InstallStart` | Neutralize `ToggleInventory` — inventory stays open during install |
+| 40 | `Patch_ClaimTaskDirect_QueueStack` | `CondOwner.AIIssueOrder` | Skip `AICancelAll` when queue non-empty and Left Alt not held → orders stack on back of queue |
+| 41 | `Patch_AICancelAll_StackSkip` | `CondOwner.AICancelAll` | Companion to #40: skips cancel while stacking is active |
+| 42 | `Patch_GetAvailActions_KeepClickable` | `CrewSim.GetAvailActionsForCO` | Re-enable all tooltip actions while a task runs (for queue feature) |
+| 43 | `Patch_GetMove2_Cache` | `CondOwner.GetMove2` | Full Prefix rewrite: zero-alloc TLS buffers for AI move selection |
+| 44 | `Patch_EndTurn_Throttle` | `CondOwner.EndTurn` | Placeholder no-op (throttle attempt broke progress bars, reverted) |
 
-> **Removed in v4.4.0:** `Patch_UpdateCrewSkills_Throttle` (v4.3.0 #27) —
-> `UpdateCrewSkills` sets static fields (`WeaponsSystem.fRangeModGunner`,
-> `fFuelEfficiencyMod`) reflecting per-ship crew state. Throttling per-ship
-> with a shared static timestamp meant only one ship per frame updated the
-> statics, corrupting values for all others.
+> **Removed in v5.0.0:**
+> - `Patch_StarSystemUpdate` parallel orbit `UpdateTime` — race condition on
+>   `boParent` fields when siblings updated concurrently.
+> - `Patch_AdvanceSim` fast-forward step cap (120 steps/frame) — froze the
+>   simulation during x4 time acceleration.
+> - `Patch_CrewSim_CacheComponents` — fragile IL NOP surgery + single-CO cache
+>   that never hit.
+> - `Patch_CondOwner_UpdateStats_Throttle` — broke `Block.Awake` /
+>   `Block.RotateCW` stat updates during ship editing.
+> - `Patch_UpdateShip_DefaultGravBO` — Postfix wrote `temp_boGrav` after
+>   vanilla already read it; cache returned the first BO, not the greatest.
+> - `Patch_UpdateCrewSkills_Throttle` (v4.3.0 #27) — `UpdateCrewSkills` sets
+>   static fields reflecting per-ship crew state; throttling per-ship with a
+>   shared timestamp corrupted values for all but one ship per frame.
 
 For the rationale behind each patch — including the original game code that
 motivated it and how a dev could fix the same issue upstream — see

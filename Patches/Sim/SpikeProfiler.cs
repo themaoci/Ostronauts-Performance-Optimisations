@@ -97,7 +97,9 @@ namespace OstronautsPerfOpt
                     // Thread suspension can throw if thread is in unsafe state
                 }
 
-                Thread.Sleep(10);
+                // Sample faster during loading to catch shorter spikes
+                int interval = (PerfOptPlugin.IsLoading || !PerfOptPlugin.GameLoaded) ? 5 : 10;
+                Thread.Sleep(interval);
 
                 // Trim samples older than 3 seconds
                 long cutoff = Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 3);
@@ -148,19 +150,19 @@ namespace OstronautsPerfOpt
             if (samples.Length == 0)
             {
                 PerfOptPlugin.Log.LogWarning(
-                    $"[STACK-PROF] {spikeInfo} — NO SAMPLES captured (spike in native/unmanaged code)");
+                    $"[STACK-PROF] {spikeInfo} — NO SAMPLES captured (spike in native/unmanaged code, or sampler thread blocked)");
                 return;
             }
 
-            var sb = new StringBuilder(2048);
+            var sb = new StringBuilder(4096);
             sb.AppendLine($"[STACK-PROF] {spikeInfo} — {samples.Length} samples in last 3s:");
 
-            // Aggregate by deepest method (first in chain)
+            // Aggregate by first 3 methods in chain for more context
             var stackCounts = new Dictionary<string, int>();
             foreach (var s in samples)
             {
                 if (string.IsNullOrEmpty(s.Stack)) continue;
-                string sig = GetSignature(s.Stack);
+                string sig = GetSignature(s.Stack, 3);
                 if (stackCounts.TryGetValue(sig, out int c))
                     stackCounts[sig] = c + 1;
                 else
@@ -172,27 +174,56 @@ namespace OstronautsPerfOpt
             foreach (var kvp in sorted)
             {
                 double pct = 100.0 * kvp.Value / samples.Length;
-                sb.AppendLine($"  {kvp.Value,4}x ({pct,5:F1}%) {kvp.Key}");
+                double estMs = pct * 0.01 * ParseSpikeMs(spikeInfo);
+                sb.Append($"  {kvp.Value,4}x ({pct,5:F1}%)");
+                if (estMs > 0) sb.Append($" ~{estMs,6:F0}ms");
+                sb.AppendLine($"  {kvp.Key}");
             }
 
-            // Show the most recent full stack
-            if (samples.Length > 0)
+            // Show the 3 most recent full stacks for context
+            int showCount = Math.Min(3, samples.Length);
+            sb.AppendLine($"  Last {showCount} full stacks:");
+            for (int i = samples.Length - showCount; i < samples.Length; i++)
             {
-                var last = samples[samples.Length - 1];
-                if (!string.IsNullOrEmpty(last.Stack))
-                {
-                    sb.AppendLine("  Last sample full stack:");
-                    sb.AppendLine($"    {last.Stack}");
-                }
+                if (!string.IsNullOrEmpty(samples[i].Stack))
+                    sb.AppendLine($"    [{i - (samples.Length - showCount) + 1}] {samples[i].Stack}");
             }
 
             PerfOptPlugin.Log.LogWarning(sb.ToString());
         }
 
-        private static string GetSignature(string fullStack)
+        private static float ParseSpikeMs(string spikeInfo)
         {
-            int arrow = fullStack.IndexOf(" -> ");
-            return arrow >= 0 ? fullStack.Substring(0, arrow) : fullStack;
+            // Extract ms value from "[SPIKE] 515.0ms ..."
+            int idx = spikeInfo.IndexOf("[SPIKE]");
+            if (idx < 0) return 0f;
+            int start = idx + 7;
+            int end = spikeInfo.IndexOf("ms", start);
+            if (end < 0) return 0f;
+            float.TryParse(spikeInfo.Substring(start, end - start).Trim(),
+                out float result);
+            return result;
+        }
+
+        private static string GetSignature(string fullStack, int depth)
+        {
+            // Take first N methods from the chain "A -> B -> C"
+            if (depth <= 1)
+            {
+                int arrow = fullStack.IndexOf(" -> ");
+                return arrow >= 0 ? fullStack.Substring(0, arrow) : fullStack;
+            }
+
+            int pos = 0;
+            for (int d = 1; d < depth; d++)
+            {
+                int arrow = fullStack.IndexOf(" -> ", pos);
+                if (arrow < 0) break;
+                pos = arrow + 4;
+            }
+            // Find next arrow after pos to cut at depth
+            int nextArrow = fullStack.IndexOf(" -> ", pos);
+            return nextArrow >= 0 ? fullStack.Substring(0, nextArrow) : fullStack;
         }
     }
 }

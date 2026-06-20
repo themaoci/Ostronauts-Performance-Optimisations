@@ -1,8 +1,7 @@
 # Build output
 bin/
 obj/
-release/*.zip
-release/*.pdb
+release/
 
 # IDE / editor
 .vs/

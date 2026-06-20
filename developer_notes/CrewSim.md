@@ -17,4 +17,8 @@
 - Replace `aTickers.FirstOrDefault()` with `var first = aTickers.Count > 0 ? aTickers[0] : null;` and reuse `first` in both the condition and body.
 - Cache the `Canvas` reference once in `Awake`/`OnEnable` and read `scaleFactor` from the cached field.
 
-**Mod patch:** `Patch_CrewSim_CacheComponents` caches the `Canvas.scaleFactor` and `Audio_VacuumController` lookups (issue #3 above). The `GetMouseOverCO` raycast/LINQ (#1) and `aTickers.FirstOrDefault()` (#2) issues are not yet patched.
+**Mod patches:**
+- `Patch_FirstOrDefault` (Patches/AI/AIPatches.cs) replaces `UniqueList<CondOwner>.FirstOrDefault()` with a direct `[0]` indexer (issue #2). `aTickers.FirstOrDefault()` now uses the cached list field directly — no LINQ enumerator.
+- `Patch_UpdateICOs_NoCopy` (Patches/AI/AIPatches.cs) overrides `CrewSim.UpdateICOs` to copy from `UniqueList._list` directly, eliminating the `IEnumerator<T>` boxing that `AddRange(aTickers)` caused every sim substep.
+- Issue #1 (`GetMouseOverCO` raycast/LINQ) is not yet patched.
+- Issue #3 (Canvas scale factor caching) was mitigated by `Patch_CrewSim_CacheComponents` in v4.x but that patch was **removed in v5.0.0** (fragile IL surgery + single-CO cache that never hit). The Canvas `GetComponent` per-frame cost remains unmitigated.

@@ -3,11 +3,15 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime;
 using System.Threading;
 using HarmonyLib;
 using UnityEngine;
 using Ostranauts.Core;
+using Ostranauts.Ships;
 
 namespace OstronautsPerfOpt
 {
@@ -221,38 +225,46 @@ namespace OstronautsPerfOpt
                 new Type[] { typeof(string), typeof(string), typeof(Dictionary<string, byte[]>) });
         }
 
+        const int BatchSize = 3;
+
         static bool Prefix(CrewSim __instance, string fileName, string strShipsFolder, Dictionary<string, byte[]> dictFiles)
         {
-            int batchSize = PerfOptPlugin.CfgSaveLoadBatchSize;
-            if (batchSize == 1)
-                return true;
-
             var sw = Stopwatch.StartNew();
-            PerfOptPlugin.Log.LogInfo("[SAVE-LOAD] Starting batched save loading...");
+            PerfOptPlugin.Log.LogInfo("[SAVE-LOAD] Starting save loading...");
+            LoadingProfiler.Start();
 
             PerfOptPlugin.SuppressDebugLog = true;
-            bool prevSuppressErrors = DataHandler.bSuppressGetErrors;
+            bool prevSuppress = DataHandler.bSuppressGetErrors;
             DataHandler.bSuppressGetErrors = true;
+            PerfOptPlugin.IsLoading = true;
+
+            long memBefore = GC.GetTotalMemory(false);
+            PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Pre-load: M={memBefore / 1048576}MB GC={GC.CollectionCount(0)}");
+
+            try
+            {
+                GCSettings.LatencyMode = GCLatencyMode.LowLatency;
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                long memClean = GC.GetTotalMemory(false);
+                PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Cleaned: M={memClean / 1048576}MB (freed {(memBefore - memClean) / 1048576}MB)");
+            }
+            catch { }
 
             var enumerator = (IEnumerator)AccessTools.Method(typeof(CrewSim), "DoLoadGame")
                 .Invoke(__instance, new object[] { fileName, strShipsFolder, dictFiles });
 
-            if (enumerator == null)
+            if (enumerator != null)
             {
-                PerfOptPlugin.SuppressDebugLog = false;
-                DataHandler.bSuppressGetErrors = prevSuppressErrors;
-                return true;
+                __instance.StartCoroutine(BatchedCoroutineLoad(enumerator, sw, prevSuppress));
+                __instance.StartCoroutine(LoadingGcSweep());
             }
-
-            if (batchSize <= 0)
-                batchSize = int.MaxValue;
-
-            __instance.StartCoroutine(BatchedCoroutineLoad(enumerator, batchSize, sw, prevSuppressErrors));
             return false;
         }
 
-        private static IEnumerator BatchedCoroutineLoad(IEnumerator inner, int batchSize,
-            Stopwatch sw, bool prevSuppressErrors)
+        private static IEnumerator BatchedCoroutineLoad(IEnumerator inner,
+            Stopwatch sw, bool prevSuppress)
         {
             var stack = new Stack<IEnumerator>();
             stack.Push(inner);
@@ -285,20 +297,210 @@ namespace OstronautsPerfOpt
                     continue;
                 }
 
-                // Non-IEnumerator yield (null, WaitForEndOfFrame, etc.)
-                // Yield it to Unity every batchSize steps
-                if (steps >= batchSize)
+                if (yielded != null)
                 {
                     steps = 0;
                     yield return yielded;
                 }
+                else if (steps >= BatchSize)
+                {
+                    steps = 0;
+                    yield return null;
+                }
             }
 
             PerfOptPlugin.SuppressDebugLog = false;
-            DataHandler.bSuppressGetErrors = prevSuppressErrors;
+            DataHandler.bSuppressGetErrors = prevSuppress;
+            PerfOptPlugin.IsLoading = false;
+
+            long memAfter = GC.GetTotalMemory(false);
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                long memFreed = memAfter - GC.GetTotalMemory(false);
+                PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Post-clean: M={memAfter / 1048576}>{GC.GetTotalMemory(false) / 1048576}MB (freed {memFreed / 1048576}MB)");
+            }
+            catch { }
+
             sw.Stop();
-            PerfOptPlugin.Log.LogInfo("[SAVE-LOAD] Complete in "
+            LoadingProfiler.Stop();
+            PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Complete in "
                 + ((double)sw.ElapsedMilliseconds / 1000.0).ToString("F2") + "s");
+        }
+
+        private static IEnumerator LoadingGcSweep()
+        {
+            var gen1Timer = new Stopwatch();
+            gen1Timer.Start();
+            while (PerfOptPlugin.IsLoading)
+            {
+                yield return new WaitForSeconds(0.25f);
+                GC.Collect(0);
+
+                long memMB = GC.GetTotalMemory(false) / 1048576;
+                if (gen1Timer.ElapsedMilliseconds >= 1500 || memMB > 1500)
+                {
+                    gen1Timer.Restart();
+                    GC.Collect(1);
+                }
+            }
+        }
+    }
+
+    // ========================================
+    // LOADING: Skip duplicate station spawns during save load
+    // ========================================
+    // StarSystem.Init(JsonStarSystemSave, JsonShip[]) does TWO passes:
+    //   1. objSystem.aSpawnStations → creates stations from TEMPLATES
+    //   2. aShips → creates ALL ships from SAVE DATA (includes stations)
+    //
+    // Stations like BCER, BCRS, OKLG appear in BOTH lists. Each station
+    // gets InitShip(Shallow) called twice — first from template, then
+    // overwritten by saved data. The first instance's GameObject + tiles
+    // + COs are orphaned (leaked memory + wasted CPU).
+    //
+    // Fix: Null out aSpawnStations when aShips is present. Station
+    // BodyOrbits already exist from objSystem.aBOs (processed earlier).
+    // Station ships come from aShips (processed later).
+
+    [HarmonyPatch]
+    public static class Patch_SkipDuplicateStationSpawn
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(StarSystem), "Init",
+                new[] { typeof(JsonStarSystemSave), typeof(JsonShip[]) });
+        }
+
+        static void Prefix(ref JsonStarSystemSave objSystem, JsonShip[] aShips)
+        {
+            try
+            {
+                if (objSystem == null) return;
+                if (aShips == null || aShips.Length == 0) return;
+                if (objSystem.aSpawnStations == null) return;
+
+                int stationCount = objSystem.aSpawnStations.Length;
+
+                var shipRegIDs = new HashSet<string>();
+                for (int i = 0; i < aShips.Length; i++)
+                {
+                    if (aShips[i] != null && aShips[i].strRegID != null)
+                        shipRegIDs.Add(aShips[i].strRegID);
+                }
+
+                int duplicates = 0;
+                foreach (var ss in objSystem.aSpawnStations)
+                {
+                    if (ss != null && ss.strName != null && shipRegIDs.Contains(ss.strName))
+                        duplicates++;
+                }
+
+                if (duplicates > 0)
+                {
+                    objSystem.aSpawnStations = null;
+                    PerfOptPlugin.Log.LogInfo(
+                        $"[LOAD-SKIP] Skipping {stationCount} station spawns ({duplicates} already in aShips) — saves {duplicates}x InitShip(Shallow)");
+                }
+            }
+            catch (Exception ex)
+            {
+                PerfOptPlugin.Log.LogWarning($"[LOAD-SKIP] Failed: {ex.Message}");
+            }
+        }
+    }
+
+    // ========================================
+    // LOADING: Eliminate O(N×M) orphaned CO scan in DoLoadGame
+    // ========================================
+    // Vanilla DoLoadGame (CrewSim.cs:1487) does, for each CO save:
+    //   if (string.IsNullOrEmpty(jcos.strRegIDLast) ||
+    //       !aShips.Any((JsonShip x) => x.strRegID == jcos.strRegIDLast))
+    //       num++;  // orphaned
+    //   else
+    //       DataHandler.dictCOSaves[jcos.strID] = jcos;
+    //
+    // aShips.Any(lambda) is O(M) per CO → O(N×M) total. For a save with
+    // 3000 COs and 300 ships that's 900,000 string comparisons, right
+    // after "Finished reading ships". This is the long pause the user
+    // sees between the read phase and system init.
+    //
+    // Fix: Transpiler on CrewSim.DoLoadGame replaces the
+    // Enumerable.Any<JsonShip>(aShips, lambda) call with a call to
+    // ShipRegIDContains(aShips, strRegID). The helper builds a
+    // HashSet<string> of ship RegIDs lazily on first call (or when the
+    // aShips array reference changes) and caches it in a [ThreadStatic]
+    // field. O(M) build once, then O(1) per CO lookup.
+    //
+    // The lambda closure captures jcos.strRegIDLast; the transpiler
+    // relies on the Any() call site pushing (aShips, delegate) and
+    // our helper accepting (aShips, strRegID) with matching stack
+    // depth. If the IL pattern doesn't match at runtime, Harmony logs
+    // a warning and vanilla runs unchanged.
+
+    [HarmonyPatch]
+    public static class Patch_DoLoadGame_FastOrphanScan
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(CrewSim), "DoLoadGame");
+        }
+
+        [ThreadStatic]
+        private static HashSet<string> _tlsShipRegIDs;
+        [ThreadStatic]
+        private static JsonShip[] _tlsShipRef;
+
+        static IEnumerable<CodeInstruction> Transpiler(
+            IEnumerable<CodeInstruction> instructions, ILGenerator il)
+        {
+            var codes = new List<CodeInstruction>(instructions);
+            var containsMethod = AccessTools.Method(
+                typeof(Patch_DoLoadGame_FastOrphanScan), "ShipRegIDContains");
+
+            int patchCount = 0;
+            for (int i = 0; i < codes.Count; i++)
+            {
+                if (codes[i].opcode == OpCodes.Call &&
+                    codes[i].operand is MethodInfo mi &&
+                    mi.Name == "Any" &&
+                    mi.DeclaringType == typeof(Enumerable))
+                {
+                    codes[i] = new CodeInstruction(OpCodes.Call, containsMethod);
+                    patchCount++;
+                }
+            }
+
+            if (patchCount > 0)
+                PerfOptPlugin.Log.LogInfo(
+                    $"[LOAD-CO] DoLoadGame: replaced {patchCount} aShips.Any() with cached HashSet.Contains()");
+            else
+                PerfOptPlugin.Log.LogInfo("[LOAD-CO] DoLoadGame: Any() call not found in IL");
+
+            return codes;
+        }
+
+        public static bool ShipRegIDContains(JsonShip[] aShips, string strRegID)
+        {
+            var set = _tlsShipRegIDs;
+            if (set == null || !ReferenceEquals(aShips, _tlsShipRef))
+            {
+                set = new HashSet<string>();
+                _tlsShipRegIDs = set;
+                _tlsShipRef = aShips;
+                if (aShips != null)
+                {
+                    for (int i = 0; i < aShips.Length; i++)
+                    {
+                        if (aShips[i] != null && aShips[i].strRegID != null)
+                            set.Add(aShips[i].strRegID);
+                    }
+                }
+            }
+            if (strRegID == null) return false;
+            return set.Contains(strRegID);
         }
     }
 

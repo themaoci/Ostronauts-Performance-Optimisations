@@ -9,3 +9,5 @@
 **Root cause:** `GetPeople` has no result-buffer reuse, so each caller pays a fresh heap allocation proportional to crew count.
 
 **Fix:** Add a `GetPeople(List<CondOwner> buffer)` overload that clears and fills a caller-supplied buffer. Callers in `CollisionManager` and `UpdateCrewSkills` can hold a reused buffer field, eliminating the per-call allocation.
+
+**Mod patch:** `Patch_Ship_UpdateCrewSkills_NoAlloc` (Patches/Optimization/OptimizationPatches.cs) replaces the `GetPeople()` call in `UpdateCrewSkills` with direct iteration of the private `aPeople` field, eliminating the per-call `List<CondOwner>` allocation. Other callers of `GetPeople` (collision paths, `ToggleCrewVisibility`) remain unpatched.
