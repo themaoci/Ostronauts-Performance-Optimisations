@@ -523,7 +523,7 @@ namespace OstronautsPerfOpt
                 sb.Append($"\nGC-Ceil:{_forcedGCCount}x cur:{mem / 1048576}/{eCeil}MB Lat:{GCSettings.LatencyMode}");
             }
 
-            _overlayText = sb.ToString();
+            _metricsText = sb.ToString();
         }
 
         private static string FmtTiming(long ticks, int count)
@@ -621,7 +621,8 @@ namespace OstronautsPerfOpt
         }
 
         private static float _fpsUpdateTimer;
-        private static string _overlayText = "";
+        private static string _fpsLine = "";
+        private static string _metricsText = "";
         private static GUIStyle _overlayStyle;
         private static Texture2D _bgTex;
         private static bool _overlayVisible = true;
@@ -629,7 +630,6 @@ namespace OstronautsPerfOpt
         private void OnGUI()
         {
             if (!_overlayVisible) return;
-            // Only render on repaint to avoid IMGUI overhead on layout/mouse events
             if (Event.current.type != EventType.Repaint) return;
 
             if (_overlayStyle == null)
@@ -647,6 +647,7 @@ namespace OstronautsPerfOpt
                 _bgTex.Apply();
             }
 
+            // Update FPS line every 0.25s (separate from metrics which update every 5s)
             _fpsUpdateTimer += Time.unscaledDeltaTime;
             if (_fpsUpdateTimer >= 0.25f)
             {
@@ -654,33 +655,30 @@ namespace OstronautsPerfOpt
                 float fps = _frameCount > 0 ? 1000f / (_totalFrameMs / _frameCount) : 0;
                 float worst = _worstFrameMs;
                 long mem = GC.GetTotalMemory(false) / (1024 * 1024);
-                string s = $"FPS:{fps:F0}  Worst:{worst:F0}ms  M:{mem}MB  Sim:{SimStepsThisFrame}";
-                if (!string.IsNullOrEmpty(_overlayText))
-                    s += "\n" + _overlayText;
-                _overlayText = s;
+                _fpsLine = $"FPS:{fps:F0}  Worst:{worst:F0}ms  M:{mem}MB  Sim:{SimStepsThisFrame}";
             }
 
-            if (string.IsNullOrEmpty(_overlayText)) return;
+            // Combine FPS line + metrics into one display string
+            string display = _fpsLine;
+            if (!string.IsNullOrEmpty(_metricsText))
+                display += "\n" + _metricsText;
+            if (string.IsNullOrEmpty(display)) return;
 
-            // Center-top panel with black semi-transparent background.
-            // Width = 60% of screen, anchored at top center, height auto-fits.
+            // Center-top panel with black semi-transparent background
             float sw = Screen.width;
-            float sh = Screen.height;
             float panelW = sw * 0.6f;
             float panelH = _overlayStyle.CalcHeight(
-                new GUIContent(_overlayText), panelW);
+                new GUIContent(display), panelW);
             float panelX = (sw - panelW) * 0.5f;
             float panelY = 8f;
 
-            // Background box
             GUI.DrawTexture(
                 new Rect(panelX - 4f, panelY - 2f, panelW + 8f, panelH + 4f),
                 _bgTex);
 
-            // Text, centered
             GUI.Label(
                 new Rect(panelX, panelY, panelW, panelH),
-                _overlayText, _overlayStyle);
+                display, _overlayStyle);
         }
     }
 }
