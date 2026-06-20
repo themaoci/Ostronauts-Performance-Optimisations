@@ -621,10 +621,9 @@ namespace OstronautsPerfOpt
         }
 
         private static float _fpsUpdateTimer;
-        private static string _fpsDisplay = "";
         private static string _overlayText = "";
-        private static GUIStyle _fpsStyle;
         private static GUIStyle _overlayStyle;
+        private static Texture2D _bgTex;
         private static bool _overlayVisible = true;
 
         private void OnGUI()
@@ -633,17 +632,19 @@ namespace OstronautsPerfOpt
             // Only render on repaint to avoid IMGUI overhead on layout/mouse events
             if (Event.current.type != EventType.Repaint) return;
 
-            if (_fpsStyle == null)
+            if (_overlayStyle == null)
             {
-                _fpsStyle = new GUIStyle(GUI.skin.label);
-                _fpsStyle.fontSize = 14;
-                _fpsStyle.normal.textColor = new Color(1f, 1f, 0.4f, 0.9f);
-                _fpsStyle.alignment = TextAnchor.UpperRight;
-
                 _overlayStyle = new GUIStyle(GUI.skin.label);
-                _overlayStyle.fontSize = 12;
-                _overlayStyle.normal.textColor = new Color(0.8f, 1f, 0.8f, 0.9f);
-                _overlayStyle.alignment = TextAnchor.UpperLeft;
+                _overlayStyle.fontSize = 13;
+                _overlayStyle.normal.textColor = new Color(0.9f, 1f, 0.9f, 0.95f);
+                _overlayStyle.alignment = TextAnchor.UpperCenter;
+                _overlayStyle.padding = new RectOffset(4, 4, 2, 2);
+                _overlayStyle.wordWrap = false;
+                _overlayStyle.richText = false;
+
+                _bgTex = new Texture2D(1, 1);
+                _bgTex.SetPixel(0, 0, new Color(0f, 0f, 0f, 0.5f));
+                _bgTex.Apply();
             }
 
             _fpsUpdateTimer += Time.unscaledDeltaTime;
@@ -653,16 +654,33 @@ namespace OstronautsPerfOpt
                 float fps = _frameCount > 0 ? 1000f / (_totalFrameMs / _frameCount) : 0;
                 float worst = _worstFrameMs;
                 long mem = GC.GetTotalMemory(false) / (1024 * 1024);
-                _fpsDisplay = $"FPS:{fps:F0} Worst:{worst:F0}ms M:{mem}MB Sim:{SimStepsThisFrame}";
+                string s = $"FPS:{fps:F0}  Worst:{worst:F0}ms  M:{mem}MB  Sim:{SimStepsThisFrame}";
+                if (!string.IsNullOrEmpty(_overlayText))
+                    s += "\n" + _overlayText;
+                _overlayText = s;
             }
 
-            // FPS line top-right
-            float w = Screen.width;
-            GUI.Label(new Rect(w - 220, 5, 210, 20), _fpsDisplay, _fpsStyle);
+            if (string.IsNullOrEmpty(_overlayText)) return;
 
-            // Full overlay top-left
-            if (!string.IsNullOrEmpty(_overlayText))
-                GUI.Label(new Rect(5, 5, 700, 200), _overlayText, _overlayStyle);
+            // Center-top panel with black semi-transparent background.
+            // Width = 60% of screen, anchored at top center, height auto-fits.
+            float sw = Screen.width;
+            float sh = Screen.height;
+            float panelW = sw * 0.6f;
+            float panelH = _overlayStyle.CalcHeight(
+                new GUIContent(_overlayText), panelW);
+            float panelX = (sw - panelW) * 0.5f;
+            float panelY = 8f;
+
+            // Background box
+            GUI.DrawTexture(
+                new Rect(panelX - 4f, panelY - 2f, panelW + 8f, panelH + 4f),
+                _bgTex);
+
+            // Text, centered
+            GUI.Label(
+                new Rect(panelX, panelY, panelW, panelH),
+                _overlayText, _overlayStyle);
         }
     }
 }
