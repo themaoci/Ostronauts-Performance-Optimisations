@@ -56,6 +56,7 @@ namespace OstronautsPerfOpt
         private static long _effectiveCeilingMB;
 
         private static bool _heapExpanded;
+        private static byte[][] _lohPool;
         private static float _loadedTime = -1f;
         private static string _heapExpandResult = "";
 
@@ -450,25 +451,29 @@ namespace OstronautsPerfOpt
             {
                 const int LargeBlockSize = 131072;
                 int largeCount = targetMB * 8;
-                byte[][] blocks = new byte[largeCount][];
+                var pool = new byte[largeCount][];
                 for (int i = 0; i < largeCount; i++)
-                    blocks[i] = new byte[LargeBlockSize];
+                    pool[i] = new byte[LargeBlockSize];
 
                 long peak = GC.GetTotalMemory(false);
 
-                blocks = null;
-                GC.Collect(0, GCCollectionMode.Optimized, false);
+                // Keep the pool alive in a static field so Boehm never needs
+                // to trace through 1024 large objects during a GC sweep.
+                // Nulling the local and collecting (as v4.3 did) made all
+                // blocks unreachable at once, causing Boehm's mark stack to
+                // overflow -> "Fatal error in GC: Unexpected mark stack overflow".
+                _lohPool = pool;
 
                 long after = GC.GetTotalMemory(false);
                 long delta = peak - before;
                 _heapExpandResult = $"M:{before / 1048576}>{after / 1048576}MB" +
-                    $" +{delta / 1048576}MB (LOH freed to pool)";
+                    $" +{delta / 1048576}MB (LOH pool retained)";
 
                 Log.LogInfo($"[HEAP] Before: M={before / 1048576}MB");
                 Log.LogInfo($"[HEAP] Peak:   M={peak / 1048576}MB");
                 Log.LogInfo($"[HEAP] After:  M={after / 1048576}MB");
                 Log.LogInfo($"[HEAP] Expanded +{delta / 1048576}MB. " +
-                    $"{largeCount} x {LargeBlockSize >> 10}KB LOH blocks released to free-list.");
+                    $"{largeCount} x {LargeBlockSize >> 10}KB LOH blocks retained in static pool.");
             }
             catch (Exception ex)
             {
