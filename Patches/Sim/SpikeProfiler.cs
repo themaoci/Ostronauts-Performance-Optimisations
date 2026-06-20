@@ -52,7 +52,10 @@ namespace OstronautsPerfOpt
             {
                 Name = "SpikeProfiler",
                 IsBackground = true,
-                Priority = ThreadPriority.Highest
+                // Normal (not Highest) so we don't preempt the main thread
+                // during native save/load code — preempting and suspending
+                // a thread inside native Unity code can crash the process.
+                Priority = ThreadPriority.BelowNormal
             };
             _samplerThread.Start();
             PerfOptPlugin.Log.LogInfo(
@@ -71,10 +74,29 @@ namespace OstronautsPerfOpt
         {
             while (_running)
             {
+                // Skip sampling during save/load — the main thread is in
+                // native Unity compression/serialization code and suspending
+                // it there can crash the process. Sleep instead.
+                if (PerfOptPlugin.IsLoading)
+                {
+                    Thread.Sleep(100);
+                    continue;
+                }
+
                 try
                 {
                     if (_mainThread != null && _stackTraceCtor != null)
                     {
+                        // Check if main thread is still alive before suspending.
+                        // A terminated thread makes StackTrace(Thread) throw
+                        // ThreadStateException, which our catch handles, but
+                        // avoiding the call is faster and safer.
+                        if (!_mainThread.IsAlive)
+                        {
+                            _mainThread = null;
+                            continue;
+                        }
+
                         var trace = (StackTrace)_stackTraceCtor.Invoke(
                             new object[] { _mainThread, false });
 

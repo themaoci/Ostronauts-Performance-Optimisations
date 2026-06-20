@@ -40,8 +40,11 @@ namespace OstronautsPerfOpt
         {
             try
             {
-                MonoSingleton<LoadManager>.Instance.StartCoroutine(
-                    CaptureScreenshotCoroutine(folderPath));
+                LoadManager host = MonoSingleton<LoadManager>.Instance;
+                if (host != null)
+                {
+                    host.StartCoroutine(CaptureScreenshotCoroutine(host, folderPath));
+                }
             }
             catch (Exception ex)
             {
@@ -51,12 +54,14 @@ namespace OstronautsPerfOpt
             return false;
         }
 
-        private static IEnumerator CaptureScreenshotCoroutine(string folderPath)
+        private static IEnumerator CaptureScreenshotCoroutine(LoadManager host, string folderPath)
         {
             yield return null;
+            if (host == null) yield break;
 
             Camera mainCamera = GameRenderer.MainCamera;
             if (mainCamera == null) yield break;
+            if (mainCamera.targetTexture != null) yield break; // camera in use by something else
 
             int width = GameRenderer.Width;
             int height = GameRenderer.Height;
@@ -64,13 +69,17 @@ namespace OstronautsPerfOpt
             Texture2D tex = null;
             try
             {
-                rt = mainCamera.targetTexture = new RenderTexture(width, height, 24);
+                rt = new RenderTexture(width, height, 24);
+                RenderTexture prevTarget = mainCamera.targetTexture;
+                mainCamera.targetTexture = rt;
                 tex = new Texture2D(width, height, TextureFormat.RGB24, mipChain: false);
                 mainCamera.Render();
                 RenderTexture.active = rt;
                 tex.ReadPixels(new Rect(0f, 0f, width, height), 0, 0);
                 tex.Apply();
-                mainCamera.targetTexture = null;
+                // Restore previous target rather than null — vanilla leaked
+                // the original target texture (see developer_notes/LoadManager.md).
+                mainCamera.targetTexture = prevTarget;
                 RenderTexture.active = null;
 
                 string path = folderPath + "screenshot.png";
@@ -108,8 +117,11 @@ namespace OstronautsPerfOpt
         {
             try
             {
-                MonoSingleton<LoadManager>.Instance.StartCoroutine(
-                    CapturePortraitsCoroutine(folderPath));
+                LoadManager host = MonoSingleton<LoadManager>.Instance;
+                if (host != null)
+                {
+                    host.StartCoroutine(CapturePortraitsCoroutine(host, folderPath));
+                }
             }
             catch (Exception ex)
             {
@@ -119,19 +131,24 @@ namespace OstronautsPerfOpt
             return false;
         }
 
-        private static IEnumerator CapturePortraitsCoroutine(string folderPath)
+        private static IEnumerator CapturePortraitsCoroutine(LoadManager host, string folderPath)
         {
             yield return null;
-
+            if (host == null) yield break;
             if (CrewSim.coPlayer == null || CrewSim.coPlayer.Company == null
                 || CrewSim.coPlayer.Company.mapRoster == null)
                 yield break;
 
-            foreach (string key in CrewSim.coPlayer.Company.mapRoster.Keys)
+            // Snapshot the roster keys to a local list — iterating the dict
+            // while yielding allows the game to mutate the collection.
+            var keys = new List<string>(CrewSim.coPlayer.Company.mapRoster.Keys);
+            foreach (string key in keys)
             {
                 if (key == CrewSim.coPlayer.strID) continue;
+                if (CrewSim.coPlayer == null) yield break; // coPlayer gone mid-iteration
                 CondOwner co = null;
                 if (!DataHandler.mapCOs.TryGetValue(key, out co)) continue;
+                if (co == null) continue;
 
                 Texture2D png = null;
                 try
