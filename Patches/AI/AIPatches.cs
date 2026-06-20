@@ -395,6 +395,7 @@ namespace OstronautsPerfOpt
             {
                 // Early outs
                 if (__instance.debugStop) return false;
+                if (__instance.bDestroyed) return false;
                 if (__instance.aInteractions == null || __instance.aInteractions.Count == 0) return false;
                 var ship = __instance.ship;
                 if (ship == null || !__instance.IsHumanOrRobot) return false;
@@ -406,8 +407,15 @@ namespace OstronautsPerfOpt
                 bool foundBest = false; // true when bestScore < 0
                 string strRef = null;
 
+                // Unity "fake null" guard: __instance.gameObject may be destroyed
+                // even though C# reference is non-null. AddComponent on a
+                // destroyed GameObject throws MissingReferenceException.
                 if (__instance.socUs == null)
+                {
+                    if (__instance.gameObject == null)
+                        return false;
                     __instance.socUs = __instance.gameObject.AddComponent<Social>();
+                }
 
                 var ctPlayerCrew = GetCTPlayerCrew();
                 bool isPlayerCrew = ctPlayerCrew != null && ctPlayerCrew.Triggered(__instance, null, true);
@@ -519,7 +527,8 @@ namespace OstronautsPerfOpt
                 if (avoid != null && Array.IndexOf(avoid, iName) >= 0) continue;
 
                 var ia = DataHandler.GetInteraction(iName, null, true);
-                if (ia == null || ia.bHumanOnly || !ia.bOpener || !ia.CTTestUs.Triggered(co, null, true))
+                if (ia == null || ia.bHumanOnly || !ia.bOpener
+                    || ia.CTTestUs == null || !ia.CTTestUs.Triggered(co, null, true))
                 {
                     DataHandler.ReleaseTrackedInteraction(ia);
                     continue;
@@ -680,7 +689,8 @@ namespace OstronautsPerfOpt
                 var ia = DataHandler.GetInteraction(aInts[idx], null, true);
                 if (ia == null) continue;
 
-                if (!ia.bOpener || ia.bHumanOnly || !ia.CTTestUs.Triggered(co, null, true))
+                if (!ia.bOpener || ia.bHumanOnly || ia.CTTestUs == null
+                    || !ia.CTTestUs.Triggered(co, null, true))
                 { DataHandler.ReleaseTrackedInteraction(ia); continue; }
 
                 _tlsTargets.Clear();

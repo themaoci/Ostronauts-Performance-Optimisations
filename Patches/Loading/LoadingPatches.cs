@@ -535,4 +535,70 @@ namespace OstronautsPerfOpt
             }
         }
     }
+
+    // ========================================
+    // SAVING: Guard against concurrent saves
+    // ========================================
+    // Vanilla OnCreateSave/OnOverwrite call SaveGame directly with no
+    // check for an in-flight _saveJob. If the user clicks Save while an
+    // autosave is running, a second _saveJob fires simultaneously — the
+    // first job's _loadedSave and SaveDto get clobbered, the save-list
+    // callback reads the wrong Exception, and the coroutine that waits
+    // for completion reads the wrong _saveJob field.
+
+    [HarmonyPatch]
+    public static class Patch_OnCreateSave_Guard
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(LoadManager), "OnCreateSave");
+        }
+
+        static bool Prefix()
+        {
+            if (Interlocked.CompareExchange(ref Patch_SaveGuard._saveInProgress, 1, 0) != 0)
+            {
+                PerfOptPlugin.Log.LogWarning("[SAVE] Save already in progress, ignoring OnCreateSave");
+                return false;
+            }
+            return true;
+        }
+
+        [HarmonyPostfix]
+        static void Postfix()
+        {
+            Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
+        }
+    }
+
+    [HarmonyPatch]
+    public static class Patch_OnOverwrite_Guard
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(LoadManager), "OnOverwrite");
+        }
+
+        static bool Prefix()
+        {
+            if (Interlocked.CompareExchange(ref Patch_SaveGuard._saveInProgress, 1, 0) != 0)
+            {
+                PerfOptPlugin.Log.LogWarning("[SAVE] Save already in progress, ignoring OnOverwrite");
+                return false;
+            }
+            return true;
+        }
+
+        [HarmonyPostfix]
+        static void Postfix()
+        {
+            Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
+        }
+    }
+
+    // Shared state for save-guard patches.
+    internal static class Patch_SaveGuard
+    {
+        internal static int _saveInProgress;
+    }
 }

@@ -275,13 +275,23 @@ namespace OstronautsPerfOpt
                     mi == _debugLogMethod)
                 {
                     int start = i;
-                    while (start > 0 &&
-                           codes[start - 1].opcode != OpCodes.Newarr)
+                    // Walk back to Ldc_I4 (the count pushed for the newarr)
+                    // NOPing only Newarr..Log leaves the count on the stack
+                    // with no consumer -> invalid IL -> InvalidProgramException
+                    // on next stack checkpoint (loop back-edge, return, throw).
+                    while (start > 0)
                     {
-                        start--;
-                    }
-                    if (start > 0 && codes[start - 1].opcode == OpCodes.Newarr)
-                    {
+                        var op = codes[start - 1].opcode;
+                        if (op == OpCodes.Ldc_I4_0 || op == OpCodes.Ldc_I4_1 ||
+                            op == OpCodes.Ldc_I4_2 || op == OpCodes.Ldc_I4_3 ||
+                            op == OpCodes.Ldc_I4_4 || op == OpCodes.Ldc_I4_5 ||
+                            op == OpCodes.Ldc_I4_6 || op == OpCodes.Ldc_I4_7 ||
+                            op == OpCodes.Ldc_I4_8 || op == OpCodes.Ldc_I4_S ||
+                            op == OpCodes.Ldc_I4 || op == OpCodes.Ldc_I4_M1 ||
+                            op == OpCodes.Ldc_I4_S)
+                        {
+                            break;
+                        }
                         start--;
                     }
 
