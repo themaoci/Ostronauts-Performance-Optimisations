@@ -646,16 +646,26 @@ namespace OstronautsPerfOpt
     }
 
     // ========================================
-    // SAVING: Backup save before overwrite
+    // SAVING: SaveGame preparation — GC suppression + optional backup
     // ========================================
-    // Before SaveGame runs, back up the existing save directory so the user
-    // can restore from the backup if the save corrupts or Steam Cloud overwrites
-    // a newer save with an older one.
+    // Before SaveGame runs:
+    //   1. Suppresses GC pauses by setting LowLatency mode, restoring the
+    //      previous mode after the save completes. This prevents gen2 GC
+    //      collections from stalling the save thread and causing freezes.
+    //   2. Backs up the existing save directory for manual saves (not
+    //      autosave/quicksave), so the user can restore if Steam Cloud
+    //      overwrites a newer save with an older one.
+    //
+    // The GC suppression runs for ALL saves (autosave and manual) since
+    // saving is the most allocation-heavy operation in the game.
     //
     // Backup naming: {savePath}_backup_{yyyyMMdd_HHmmss}
+    //
+    // Backup skips autosaves and quicksaves because they save frequently
+    // and the recursive directory copy on the main thread causes stutters.
 
     [HarmonyPatch]
-    public static class Patch_SaveGame_Backup
+    public static class Patch_SaveGame_BeforeSave
     {
         static MethodBase TargetMethod()
         {
@@ -663,26 +673,53 @@ namespace OstronautsPerfOpt
                 new Type[] { typeof(string), typeof(int), typeof(bool) });
         }
 
+        // Save names that are NOT backed up (autosaves, quicksaves, etc.)
+        private static readonly string[] SkipBackupNames = new[]
+        {
+            "autosave", "quicksave", "autosave_"
+        };
+
+        // Track last backup time per save slot to throttle to once per 60s
+        private static readonly Dictionary<string, double> _lastBackupTime =
+            new Dictionary<string, double>();
+        private const double BackupThrottleSec = 60.0;
+
         static void Prefix(string saveName)
         {
+            // Step 1: Suppress GC during save — prevents gen2 stalls
+            try
+            {
+                GCSettings.LatencyMode = GCLatencyMode.LowLatency;
+            }
+            catch { }
+
+            // Step 2: Backup existing save (manual saves only)
             try
             {
                 if (!PerfOptPlugin.CfgSaveBackup) return;
                 if (string.IsNullOrEmpty(saveName)) return;
 
-                // The saveName parameter is typically a path like:
-                //   {persistentDataPath}/Saves/{slotname}/{slotname}.save
-                // Or just a slot name. Try to find the directory.
-                string saveDir = null;
+                // Skip autosaves and quicksaves
+                string nameLower = saveName.ToLowerInvariant();
+                bool isAutoSave = false;
+                for (int i = 0; i < SkipBackupNames.Length; i++)
+                {
+                    if (nameLower.Contains(SkipBackupNames[i]))
+                    {
+                        isAutoSave = true;
+                        break;
+                    }
+                }
+                if (isAutoSave) return;
 
-                // Try as a full path first
+                // Resolve save directory from saveName
+                string saveDir = null;
                 if (saveName.IndexOfAny(new[] { '\\', '/' }) >= 0)
                 {
                     saveDir = Path.GetDirectoryName(saveName);
                 }
                 else
                 {
-                    // Try persistent data path
                     string candidate = Path.Combine(
                         Application.persistentDataPath, "Saves", saveName);
                     if (Directory.Exists(candidate))
@@ -692,10 +729,19 @@ namespace OstronautsPerfOpt
                 if (saveDir == null || !Directory.Exists(saveDir))
                     return;
 
+                // Throttle: don't backup the same save more than once per 60s
+                double now = Time.realtimeSinceStartupAsDouble;
+                double lastTime;
+                if (_lastBackupTime.TryGetValue(saveDir, out lastTime))
+                {
+                    if (now - lastTime < BackupThrottleSec)
+                        return;
+                }
+                _lastBackupTime[saveDir] = now;
+
                 string backupDir = saveDir.TrimEnd('\\', '/')
                     + "_backup_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
 
-                // Recursive directory copy
                 CopyDirectory(saveDir, backupDir);
 
                 PerfOptPlugin.Log.LogInfo(
@@ -705,6 +751,16 @@ namespace OstronautsPerfOpt
             {
                 PerfOptPlugin.Log.LogWarning($"[SAVE-BACKUP] Failed: {ex.Message}");
             }
+        }
+
+        static void Postfix()
+        {
+            // Restore GC latency mode after save completes
+            try
+            {
+                GCSettings.LatencyMode = GCLatencyMode.LowLatency;
+            }
+            catch { }
         }
 
         private static void CopyDirectory(string source, string dest)

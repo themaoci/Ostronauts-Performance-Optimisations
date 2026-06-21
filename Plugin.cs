@@ -176,7 +176,7 @@ namespace OstronautsPerfOpt
                 typeof(Patch_DebugLogWarning_Passthrough),
                 typeof(Patch_DebugLogError_Passthrough),
                 typeof(Patch_SaveGame_Threaded),
-                typeof(Patch_SaveGame_Backup),
+                typeof(Patch_SaveGame_BeforeSave),
                 typeof(Patch_OnCreateSave_Guard),
                 typeof(Patch_OnOverwrite_Guard),
                 typeof(Patch_SaveScreenShot_Defer),
