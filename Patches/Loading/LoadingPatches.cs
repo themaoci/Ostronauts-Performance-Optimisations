@@ -588,6 +588,10 @@ namespace OstronautsPerfOpt
     // first job's _loadedSave and SaveDto get clobbered, the save-list
     // callback reads the wrong Exception, and the coroutine that waits
     // for completion reads the wrong _saveJob field.
+    //
+    // Uses Harmony Finalizer (not Postfix) so _saveInProgress is ALWAYS
+    // reset even if the original method throws an exception. Without this,
+    // a single save failure permanently blocks all future saves.
 
     [HarmonyPatch]
     public static class Patch_OnCreateSave_Guard
@@ -607,10 +611,12 @@ namespace OstronautsPerfOpt
             return true;
         }
 
-        [HarmonyPostfix]
-        static void Postfix()
+        // Finalizer runs EVEN IF the original method throws — guarantees
+        // _saveInProgress is always reset, preventing softlock on saves.
+        static Exception Finalizer()
         {
             Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
+            return null;
         }
     }
 
@@ -632,10 +638,10 @@ namespace OstronautsPerfOpt
             return true;
         }
 
-        [HarmonyPostfix]
-        static void Postfix()
+        static Exception Finalizer()
         {
             Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
+            return null;
         }
     }
 
@@ -649,20 +655,17 @@ namespace OstronautsPerfOpt
     // SAVING: SaveGame preparation — GC suppression + optional backup
     // ========================================
     // Before SaveGame runs:
-    //   1. Suppresses GC pauses by setting LowLatency mode, restoring the
-    //      previous mode after the save completes. This prevents gen2 GC
-    //      collections from stalling the save thread and causing freezes.
+    //   1. Suppresses GC pauses by setting LowLatency mode. The Finalizer
+    //      (always-runs) restores the previous mode afterward.
     //   2. Backs up the existing save directory for manual saves (not
     //      autosave/quicksave), so the user can restore if Steam Cloud
     //      overwrites a newer save with an older one.
     //
-    // The GC suppression runs for ALL saves (autosave and manual) since
-    // saving is the most allocation-heavy operation in the game.
-    //
     // Backup naming: {savePath}_backup_{yyyyMMdd_HHmmss}
-    //
-    // Backup skips autosaves and quicksaves because they save frequently
-    // and the recursive directory copy on the main thread causes stutters.
+    // Only top-level files are copied (no subdirectories, no recursion).
+    // This is safe: the save directory only has flat files (save.zip,
+    // screenshot.png, crew portraits). Recursive copy on main thread
+    // would be a freeze risk.
 
     [HarmonyPatch]
     public static class Patch_SaveGame_BeforeSave
@@ -672,6 +675,9 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(LoadManager), "SaveGame",
                 new Type[] { typeof(string), typeof(int), typeof(bool) });
         }
+
+        // Save the previous GC mode so Finalizer can restore it exactly
+        [ThreadStatic] private static GCLatencyMode _prevGCMode;
 
         // Save names that are NOT backed up (autosaves, quicksaves, etc.)
         private static readonly string[] SkipBackupNames = new[]
@@ -686,12 +692,9 @@ namespace OstronautsPerfOpt
 
         static void Prefix(string saveName)
         {
-            // Step 1: Suppress GC during save — prevents gen2 stalls
-            try
-            {
-                GCSettings.LatencyMode = GCLatencyMode.LowLatency;
-            }
-            catch { }
+            // Step 1: Save previous GC mode, suppress GC during save
+            try { _prevGCMode = GCSettings.LatencyMode; } catch { }
+            try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; } catch { }
 
             // Step 2: Backup existing save (manual saves only)
             try
@@ -701,18 +704,13 @@ namespace OstronautsPerfOpt
 
                 // Skip autosaves and quicksaves
                 string nameLower = saveName.ToLowerInvariant();
-                bool isAutoSave = false;
                 for (int i = 0; i < SkipBackupNames.Length; i++)
                 {
                     if (nameLower.Contains(SkipBackupNames[i]))
-                    {
-                        isAutoSave = true;
-                        break;
-                    }
+                        return;
                 }
-                if (isAutoSave) return;
 
-                // Resolve save directory from saveName
+                // Resolve save directory
                 string saveDir = null;
                 if (saveName.IndexOfAny(new[] { '\\', '/' }) >= 0)
                 {
@@ -742,7 +740,15 @@ namespace OstronautsPerfOpt
                 string backupDir = saveDir.TrimEnd('\\', '/')
                     + "_backup_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
 
-                CopyDirectory(saveDir, backupDir);
+                // Flat copy: only top-level files (save.zip, screenshots, portraits)
+                // No recursion — save dirs have no nested subdirs and recursive
+                // copy on main thread would be a freeze risk.
+                Directory.CreateDirectory(backupDir);
+                foreach (string file in Directory.GetFiles(saveDir))
+                {
+                    string destFile = Path.Combine(backupDir, Path.GetFileName(file));
+                    File.Copy(file, destFile, true);
+                }
 
                 PerfOptPlugin.Log.LogInfo(
                     $"[SAVE-BACKUP] Backed up '{saveDir}' -> '{backupDir}'");
@@ -753,29 +759,11 @@ namespace OstronautsPerfOpt
             }
         }
 
-        static void Postfix()
+        // Finalizer always runs — restores GC mode even if save throws
+        static Exception Finalizer()
         {
-            // Restore GC latency mode after save completes
-            try
-            {
-                GCSettings.LatencyMode = GCLatencyMode.LowLatency;
-            }
-            catch { }
-        }
-
-        private static void CopyDirectory(string source, string dest)
-        {
-            Directory.CreateDirectory(dest);
-            foreach (string file in Directory.GetFiles(source))
-            {
-                string destFile = Path.Combine(dest, Path.GetFileName(file));
-                File.Copy(file, destFile, true);
-            }
-            foreach (string dir in Directory.GetDirectories(source))
-            {
-                string destDir = Path.Combine(dest, Path.GetFileName(dir));
-                CopyDirectory(dir, destDir);
-            }
+            try { GCSettings.LatencyMode = _prevGCMode; } catch { }
+            return null;
         }
     }
 }
