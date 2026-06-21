@@ -103,8 +103,9 @@ namespace OstronautsPerfOpt
             {
                 ModLoader Mod = LoadManager.LoadingQueue[0];
                 LoadManager.LoadingQueue.RemoveAt(0);
+                if (Mod == null) continue;
 
-                if (Mod != null && Mod.JsonModInfo != null && !string.IsNullOrEmpty(Mod.JsonModInfo.strName))
+                if (Mod.JsonModInfo != null && !string.IsNullOrEmpty(Mod.JsonModInfo.strName))
                 {
                     lock (LoadManager.outputLock)
                     {
@@ -118,26 +119,22 @@ namespace OstronautsPerfOpt
                     {
                         if (LoadManager.mainLoadTerminate)
                         {
+                            // Set terminate flags (under handle locks) then Join outside
                             for (int i = 0; i < ThreadCount; i++)
                             {
                                 lock (Threads[i].handle)
                                     Threads[i].terminate = true;
-                            }
-                            for (int i = 0; i < ThreadCount; i++)
-                            {
-                                if (Threads[i].t != null && Threads[i].t.IsAlive)
-                                    Threads[i].t.Join();
                             }
                             return false;
                         }
                     }
 
                     FileLoader fileLoader = Mod.fileLoaders[l];
-                    try { fileLoader.loadDelegate(); }
-                    catch (Exception ex) { PerfOptPlugin.Log.LogWarning($"[PARLOAD] fileLoader failed: {ex.Message}"); }
-
-                    if (fileLoader != null && !string.IsNullOrEmpty(fileLoader.fileName))
+                    if (fileLoader != null)
                     {
+                        try { fileLoader.loadDelegate(); }
+                        catch (Exception ex) { PerfOptPlugin.Log.LogWarning($"[PARLOAD] fileLoader failed: {ex.Message}"); }
+
                         lock (LoadManager.outputLock)
                         {
                             LoadManager.fileNamesLoaded.Add(Path.GetFileNameWithoutExtension(fileLoader.fileName));
@@ -147,15 +144,19 @@ namespace OstronautsPerfOpt
                 }
 
                 for (int m = 0; m < Mod.PerModPostLoadAsyncOkay.Count; m++)
-                    Mod.PerModPostLoadAsyncOkay[m]();
+                {
+                    if (Mod.PerModPostLoadAsyncOkay[m] != null)
+                        Mod.PerModPostLoadAsyncOkay[m]();
+                }
 
-                if (Mod != null && Mod.JsonModInfo != null && !string.IsNullOrEmpty(Mod.JsonModInfo.strName))
+                if (Mod.JsonModInfo != null && !string.IsNullOrEmpty(Mod.JsonModInfo.strName))
                 {
                     lock (LoadManager.outputLock)
                     {
                         LoadManager.modNamesCompletedLoading.Add(Mod.JsonModInfo.strName);
                     }
                 }
+                Mod.complete = true;
                 Mod.complete = true;
 
                 // Update progress from parallel ship loading too
@@ -613,10 +614,11 @@ namespace OstronautsPerfOpt
 
         // Finalizer runs EVEN IF the original method throws — guarantees
         // _saveInProgress is always reset, preventing softlock on saves.
-        static Exception Finalizer()
+        // Returns __exception to pass through the error so the game still sees it.
+        static Exception Finalizer(Exception __exception)
         {
             Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
-            return null;
+            return __exception;
         }
     }
 
@@ -638,10 +640,10 @@ namespace OstronautsPerfOpt
             return true;
         }
 
-        static Exception Finalizer()
+        static Exception Finalizer(Exception __exception)
         {
             Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
-            return null;
+            return __exception;
         }
     }
 
@@ -678,6 +680,7 @@ namespace OstronautsPerfOpt
 
         // Save the previous GC mode so Finalizer can restore it exactly
         [ThreadStatic] private static GCLatencyMode _prevGCMode;
+        [ThreadStatic] private static bool _gcModeSaved;
 
         // Save names that are NOT backed up (autosaves, quicksaves, etc.)
         private static readonly string[] SkipBackupNames = new[]
@@ -688,12 +691,14 @@ namespace OstronautsPerfOpt
         // Track last backup time per save slot to throttle to once per 60s
         private static readonly Dictionary<string, double> _lastBackupTime =
             new Dictionary<string, double>();
+        private static readonly object _backupLock = new object();
         private const double BackupThrottleSec = 60.0;
 
         static void Prefix(string saveName)
         {
             // Step 1: Save previous GC mode, suppress GC during save
-            try { _prevGCMode = GCSettings.LatencyMode; } catch { }
+            _gcModeSaved = false;
+            try { _prevGCMode = GCSettings.LatencyMode; _gcModeSaved = true; } catch { }
             try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; } catch { }
 
             // Step 2: Backup existing save (manual saves only)
@@ -729,25 +734,27 @@ namespace OstronautsPerfOpt
 
                 // Throttle: don't backup the same save more than once per 60s
                 double now = Time.realtimeSinceStartupAsDouble;
-                double lastTime;
-                if (_lastBackupTime.TryGetValue(saveDir, out lastTime))
+                lock (_backupLock)
                 {
-                    if (now - lastTime < BackupThrottleSec)
-                        return;
+                    double lastTime;
+                    if (_lastBackupTime.TryGetValue(saveDir, out lastTime))
+                    {
+                        if (now - lastTime < BackupThrottleSec)
+                            return;
+                    }
+                    _lastBackupTime[saveDir] = now;
                 }
-                _lastBackupTime[saveDir] = now;
 
                 string backupDir = saveDir.TrimEnd('\\', '/')
                     + "_backup_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
 
                 // Flat copy: only top-level files (save.zip, screenshots, portraits)
-                // No recursion — save dirs have no nested subdirs and recursive
-                // copy on main thread would be a freeze risk.
                 Directory.CreateDirectory(backupDir);
-                foreach (string file in Directory.GetFiles(saveDir))
+                string[] files = Directory.GetFiles(saveDir);
+                for (int i = 0; i < files.Length; i++)
                 {
-                    string destFile = Path.Combine(backupDir, Path.GetFileName(file));
-                    File.Copy(file, destFile, true);
+                    string destFile = Path.Combine(backupDir, Path.GetFileName(files[i]));
+                    File.Copy(files[i], destFile, true);
                 }
 
                 PerfOptPlugin.Log.LogInfo(
@@ -760,10 +767,14 @@ namespace OstronautsPerfOpt
         }
 
         // Finalizer always runs — restores GC mode even if save throws
-        static Exception Finalizer()
+        // Returns __exception to pass through errors so the game still sees them.
+        static Exception Finalizer(Exception __exception)
         {
-            try { GCSettings.LatencyMode = _prevGCMode; } catch { }
-            return null;
+            if (_gcModeSaved)
+            {
+                try { GCSettings.LatencyMode = _prevGCMode; } catch { }
+            }
+            return __exception;
         }
     }
 }

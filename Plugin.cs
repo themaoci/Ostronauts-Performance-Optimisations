@@ -86,7 +86,7 @@ namespace OstronautsPerfOpt
         public static long TParseCL;     public static int CParseCL;
         public static long TStarSys;     public static int CStarSys;
 
-        internal static bool SuppressDebugLog;
+        internal static volatile bool SuppressDebugLog;
         public static long TCleanup;     public static int CCleanup;
         public static long TUpdateStats; public static int CUpdateStats;
         public static long TOrbits;      public static int COrbits;
@@ -621,10 +621,24 @@ namespace OstronautsPerfOpt
         private void OnDestroy()
         {
             SpikeProfiler.Stop();
-            if (_gcModeSet)
+
+            // Restore GC latency mode (no guard — always try)
+            try { GCSettings.LatencyMode = _originalGCLatencyMode; }
+            catch { }
+
+            // Release Texture2D GPU memory
+            if (_bgTex != null)
             {
-                try { GCSettings.LatencyMode = _originalGCLatencyMode; }
-                catch { }
+                UnityEngine.Object.Destroy(_bgTex);
+                _bgTex = null;
+            }
+            _overlayStyle = null;
+
+            // Release LOH pool so Boehm GC can reclaim the memory
+            if (_lohPool != null)
+            {
+                _lohPool = null;
+                Log.LogInfo("[HEAP] LOH pool released on destroy");
             }
         }
 

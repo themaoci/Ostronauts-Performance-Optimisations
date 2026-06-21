@@ -41,7 +41,10 @@ namespace OstronautsPerfOpt
 
         static bool Prefix(string message)
         {
-            return false;
+            // Suppress info logs during loading; pass through normally otherwise
+            if (PerfOptPlugin.SuppressDebugLog)
+                return false;
+            return true;
         }
     }
 

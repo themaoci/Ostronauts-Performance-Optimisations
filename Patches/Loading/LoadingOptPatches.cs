@@ -34,7 +34,7 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(CrewSim), "OnApplicationQuit");
         }
 
-        private static bool _exitFired;
+        private static volatile bool _exitFired;
         private static bool _hookRegistered;
 
         static void Postfix()
