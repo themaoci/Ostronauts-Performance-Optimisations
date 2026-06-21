@@ -9,6 +9,7 @@ using System.Reflection.Emit;
 using HarmonyLib;
 using UnityEngine;
 using Ostranauts.Core;
+using Ostranauts;
 
 namespace OstronautsPerfOpt
 {
@@ -302,6 +303,79 @@ namespace OstronautsPerfOpt
             }
 
             return codes;
+        }
+    }
+
+    // ========================================
+    // LOADING: Batch ship spawning in StarSystem.Init
+    // ========================================
+    // StarSystem.Init(JsonStarSystemSave, JsonShip[]) spawns ALL ships one at a
+    // time, yielding once per ship (lines 242-256). For 300 ships that's 300
+    // frames of ship spawning at 1 ship/frame.
+    //
+    // The outer Patch_DoLoadGame_BatchYields already batches the DoLoadGame
+    // coroutine's yields (3 per frame), but InitShip(Shallow) itself is expensive
+    // (creates GameObjects, tiles, COs). Even with 3 ships per frame, 300 ships
+    // = 100 frames of heavy work.
+    //
+    // Fix: Postfix on StarSystem.Init wraps the returned IEnumerator in a
+    // batched wrapper that processes N ships per frame instead of 1. The wrapper
+    // yields a non-null value (true) every N ships so the outer batch logic
+    // (which only batches null yields) passes it through immediately.
+
+    [HarmonyPatch]
+    public static class Patch_StarInit_BatchShipSpawn
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(StarSystem), "Init",
+                new[] { typeof(JsonStarSystemSave), typeof(JsonShip[]) });
+        }
+
+        const int ShipBatchSize = 10;
+
+        static IEnumerator Postfix(IEnumerator result,
+            JsonStarSystemSave objSystem, JsonShip[] aShips)
+        {
+            if (result == null) return null;
+            return BatchedInit(result, aShips);
+        }
+
+        private static IEnumerator BatchedInit(IEnumerator inner, JsonShip[] aShips)
+        {
+            int steps = 0;
+            int shipCount = aShips?.Length ?? 0;
+
+            while (inner.MoveNext())
+            {
+                object yielded = inner.Current;
+                steps++;
+
+                if (yielded != null)
+                {
+                    // Non-null yield (progress bar update, yield return true, etc.)
+                    // Pass through immediately — reset batch counter so the next
+                    // batch of null yields starts fresh.
+                    steps = 0;
+                    yield return yielded;
+                }
+                else if (steps >= ShipBatchSize)
+                {
+                    // N ships processed — yield a non-null value so the outer
+                    // BatchedCoroutineLoad (which only batches null yields)
+                    // passes this through to Unity immediately.
+                    steps = 0;
+                    yield return true;
+                }
+                // else: null yield consumed by batching, continue without yielding
+            }
+
+            // Progress bar: if we consumed the final yield, update it manually
+            if (shipCount > 0)
+            {
+                LoadingScreen.SetProgressBar(
+                    LoadingScreen.GetProgress() + 0.01f, "Spawning System Ships (done)");
+            }
         }
     }
 

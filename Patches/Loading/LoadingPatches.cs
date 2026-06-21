@@ -257,13 +257,13 @@ namespace OstronautsPerfOpt
 
             if (enumerator != null)
             {
-                __instance.StartCoroutine(BatchedCoroutineLoad(enumerator, sw, prevSuppress));
+                __instance.StartCoroutine(BatchedCoroutineLoad(__instance, enumerator, sw, prevSuppress));
                 __instance.StartCoroutine(LoadingGcSweep());
             }
             return false;
         }
 
-        private static IEnumerator BatchedCoroutineLoad(IEnumerator inner,
+        private static IEnumerator BatchedCoroutineLoad(CrewSim instance, IEnumerator inner,
             Stopwatch sw, bool prevSuppress)
         {
             var stack = new Stack<IEnumerator>();
@@ -308,6 +308,49 @@ namespace OstronautsPerfOpt
                     yield return null;
                 }
             }
+
+            // Force a frame, then restore the vanilla finalization sequence:
+            //   1. Fire OnGameFinishedLoading  (before Paused changes — triggers EnableCrewsimMaps, etc.)
+            //   2. Paused = false              (one frame of unpaused processing)
+            //   3. ForceUpdateAnimators()      (updates animator states during the unpaused frame)
+            //   4. yield return null            (let Unity process the unpaused frame)
+            //   5. Paused = true               (re-pause the game)
+            //   6. _finishedLoading = true     (mark loading complete)
+            try
+            {
+                // Step 1: Fire OnGameFinishedLoading (before state changes)
+                var fiEvent = AccessTools.Field(typeof(CrewSim), "OnGameFinishedLoading");
+                if (fiEvent != null)
+                {
+                    var unityEvent = fiEvent.GetValue(null) as UnityEngine.Events.UnityEvent;
+                    if (unityEvent != null)
+                        unityEvent.Invoke();
+                }
+            }
+            catch { }
+
+            // Step 2-3: Unpause + update animators
+            try { CrewSim.Paused = false; } catch { }
+            try
+            {
+                var forceAnimMethod = AccessTools.Method(typeof(CrewSim), "ForceUpdateAnimators");
+                forceAnimMethod?.Invoke(instance, null);
+            }
+            catch { }
+
+            // Step 4: One frame of unpaused processing
+            yield return null;
+
+            // Step 5-6: Re-pause and mark complete
+            try { CrewSim.Paused = true; } catch { }
+            try
+            {
+                var fiFinished = AccessTools.Field(typeof(CrewSim), "_finishedLoading");
+                if (fiFinished != null)
+                    fiFinished.SetValue(instance, true);
+            }
+            catch { }
+            PerfOptPlugin.Log.LogInfo("[LOAD-BATCH] Finalized: OnGameFinishedLoading -> Paused=false -> ForceUpdateAnimators -> yield -> Paused=true -> _finishedLoading=true");
 
             PerfOptPlugin.SuppressDebugLog = false;
             DataHandler.bSuppressGetErrors = prevSuppress;
@@ -600,5 +643,83 @@ namespace OstronautsPerfOpt
     internal static class Patch_SaveGuard
     {
         internal static int _saveInProgress;
+    }
+
+    // ========================================
+    // SAVING: Backup save before overwrite
+    // ========================================
+    // Before SaveGame runs, back up the existing save directory so the user
+    // can restore from the backup if the save corrupts or Steam Cloud overwrites
+    // a newer save with an older one.
+    //
+    // Backup naming: {savePath}_backup_{yyyyMMdd_HHmmss}
+
+    [HarmonyPatch]
+    public static class Patch_SaveGame_Backup
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(LoadManager), "SaveGame",
+                new Type[] { typeof(string), typeof(int), typeof(bool) });
+        }
+
+        static void Prefix(string saveName)
+        {
+            try
+            {
+                if (!PerfOptPlugin.CfgSaveBackup) return;
+                if (string.IsNullOrEmpty(saveName)) return;
+
+                // The saveName parameter is typically a path like:
+                //   {persistentDataPath}/Saves/{slotname}/{slotname}.save
+                // Or just a slot name. Try to find the directory.
+                string saveDir = null;
+
+                // Try as a full path first
+                if (saveName.IndexOfAny(new[] { '\\', '/' }) >= 0)
+                {
+                    saveDir = Path.GetDirectoryName(saveName);
+                }
+                else
+                {
+                    // Try persistent data path
+                    string candidate = Path.Combine(
+                        Application.persistentDataPath, "Saves", saveName);
+                    if (Directory.Exists(candidate))
+                        saveDir = candidate;
+                }
+
+                if (saveDir == null || !Directory.Exists(saveDir))
+                    return;
+
+                string backupDir = saveDir.TrimEnd('\\', '/')
+                    + "_backup_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+
+                // Recursive directory copy
+                CopyDirectory(saveDir, backupDir);
+
+                PerfOptPlugin.Log.LogInfo(
+                    $"[SAVE-BACKUP] Backed up '{saveDir}' -> '{backupDir}'");
+            }
+            catch (Exception ex)
+            {
+                PerfOptPlugin.Log.LogWarning($"[SAVE-BACKUP] Failed: {ex.Message}");
+            }
+        }
+
+        private static void CopyDirectory(string source, string dest)
+        {
+            Directory.CreateDirectory(dest);
+            foreach (string file in Directory.GetFiles(source))
+            {
+                string destFile = Path.Combine(dest, Path.GetFileName(file));
+                File.Copy(file, destFile, true);
+            }
+            foreach (string dir in Directory.GetDirectories(source))
+            {
+                string destDir = Path.Combine(dest, Path.GetFileName(dir));
+                CopyDirectory(dir, destDir);
+            }
+        }
     }
 }

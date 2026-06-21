@@ -46,6 +46,7 @@ namespace OstronautsPerfOpt
         internal const bool CfgOptimizeTickers = true;
         internal const bool CfgThreadedSave = true;
         internal const bool CfgSkipSaveScreenshot = true;
+        internal const bool CfgSaveBackup = true;
 
         internal static long FrameStartTimestamp;
 
@@ -175,6 +176,7 @@ namespace OstronautsPerfOpt
                 typeof(Patch_DebugLogWarning_Passthrough),
                 typeof(Patch_DebugLogError_Passthrough),
                 typeof(Patch_SaveGame_Threaded),
+                typeof(Patch_SaveGame_Backup),
                 typeof(Patch_OnCreateSave_Guard),
                 typeof(Patch_OnOverwrite_Guard),
                 typeof(Patch_SaveScreenShot_Defer),
@@ -196,6 +198,7 @@ namespace OstronautsPerfOpt
                 typeof(Patch_DeliverMessages_NoAlloc),
                 typeof(Patch_OnApplicationQuit_FastExit),
                 typeof(Patch_SkipDuplicateStationSpawn),
+                typeof(Patch_StarInit_ParallelShipSpawn),
                 typeof(Patch_ClaimTaskDirect_QueueStack),
                 typeof(Patch_AICancelAll_StackSkip)
             };
@@ -669,9 +672,10 @@ namespace OstronautsPerfOpt
                 display += "\n" + _metricsText;
             if (string.IsNullOrEmpty(display)) return;
 
-            // Center-top panel with black semi-transparent background
+            // Center-top panel scaled to text content, with padding
             float sw = Screen.width;
-            float panelW = sw * 0.6f;
+            Vector2 textSize = _overlayStyle.CalcSize(new GUIContent(display));
+            float panelW = Mathf.Min(textSize.x + 16f, sw * 0.6f);
             float panelH = _overlayStyle.CalcHeight(
                 new GUIContent(display), panelW);
             float panelX = (sw - panelW) * 0.5f;
