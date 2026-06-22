@@ -199,8 +199,8 @@ namespace OstronautsPerfOpt
                 typeof(Patch_OnApplicationQuit_FastExit),
                 typeof(Patch_SkipDuplicateStationSpawn),
                 typeof(Patch_StarInit_ParallelShipSpawn),
-                typeof(Patch_ClaimTaskDirect_QueueStack),
-                typeof(Patch_AICancelAll_StackSkip),
+                // typeof(Patch_ClaimTaskDirect_QueueStack), // disabled — movement still queued incorrectly
+                // typeof(Patch_AICancelAll_StackSkip),
                 typeof(Patch_GetControllerType_Cache),
                 typeof(Patch_SetFPS_Fix)
                 // Patch_VisitCOs_Parallel disabled: visitors call Debug.Log/Debug.Break

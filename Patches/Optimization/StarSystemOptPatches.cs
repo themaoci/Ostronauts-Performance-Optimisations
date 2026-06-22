@@ -188,6 +188,9 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(StarSystem), "UpdateShip");
         }
 
+        private static readonly FieldInfo _tempBoGravField =
+            AccessTools.Field(typeof(StarSystem), "temp_boGrav");
+
         // Postfix replaces the FirstOrDefault().Value fallback with a no-alloc
         // foreach (struct enumerator on Dictionary, no boxing). Vanilla does:
         //     if (temp_boGrav == null)
@@ -196,11 +199,13 @@ namespace OstronautsPerfOpt
         // temp_boGrav stays null — same behavior as our Postfix.
         static void Postfix(StarSystem __instance)
         {
-            if (__instance.temp_boGrav != null) return;
+            if (_tempBoGravField == null) return;
+            object current = _tempBoGravField.GetValue(__instance);
+            if (current != null) return;
             if (__instance.aBOs == null || __instance.aBOs.Count == 0) return;
             foreach (var kvp in __instance.aBOs)
             {
-                __instance.temp_boGrav = kvp.Value;
+                _tempBoGravField.SetValue(__instance, kvp.Value);
                 return;
             }
         }
