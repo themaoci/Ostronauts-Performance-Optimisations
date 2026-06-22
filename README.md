@@ -210,7 +210,7 @@ game installed), set `GameDir` to any writable folder and copy the resulting
 | 8 | `Patch_Cleanup` | `CondOwner.Cleanup` | Timing observation |
 | 9 | `Patch_FirstOrDefault` | `UniqueList<CondOwner>.FirstOrDefault` | Direct indexer `[0]` (no enumerator) |
 | 10 | `Patch_UpdateStats` | `CondOwner.UpdateStats` | Timing observation |
-| 11 | `Patch_SuppressInteractionLog` | `DataHandler.GetInteraction` | Bounded missing-key cache |
+| 11 | ~~`Patch_SuppressInteractionLog`~~ | `DataHandler.GetInteraction` | DISABLED — suspected of breaking multi-item purchases |
 | 12 | `Patch_CleanupExpire` | `CondOwner.Cleanup` | TLS expiry buffers + `new List<string>(Keys)` transpiler |
 | 13 | `Patch_UpdateICOsParallelPrepass` | `CrewSim.UpdateICOs` | Parallel cleanup-expiry prepass |
 | 14 | `Patch_StarSystemUpdate_ToList` | `StarSystem.Update` | Reusable ship buffer |
@@ -247,7 +247,7 @@ game installed), set `GameDir` to any writable folder and copy the resulting
 | 40 | `Patch_ClaimTaskDirect_QueueStack` | `CondOwner.AIIssueOrder` | Skip `AICancelAll` when queue non-empty and Left Alt not held → orders stack on back of queue |
 | 41 | `Patch_AICancelAll_StackSkip` | `CondOwner.AICancelAll` | Companion to #40: skips cancel while stacking is active |
 | 42 | `Patch_GetAvailActions_KeepClickable` | `CrewSim.GetAvailActionsForCO` | Re-enable all tooltip actions while a task runs (for queue feature) |
-| 43 | `Patch_GetMove2_Cache` | `CondOwner.GetMove2` | Full Prefix rewrite: zero-alloc TLS buffers for AI move selection |
+| 43 | ~~`Patch_GetMove2_Cache`~~ | `CondOwner.GetMove2` | DISABLED — suspected of causing AI movement ping-pong |
 | 44 | `Patch_EndTurn_Throttle` | `CondOwner.EndTurn` | Placeholder no-op (throttle attempt broke progress bars, reverted) |
 
 > **Removed in v5.0.0:**

@@ -233,7 +233,11 @@ namespace OstronautsPerfOpt
             }
 
             Log.LogInfo($"=== PerfOpt v5.0.0 ({ok}/{patches.Length} patches) ===");
-            Log.LogInfo("  All optimizations hardcoded ON. No config.");
+            int disabled = patches.Length - ok;
+            if (disabled > 0)
+                Log.LogInfo($"  {ok} patches active, {disabled} disabled (SuppressInteractionLog, GetMove2_Cache)");
+            else
+                Log.LogInfo("  All optimizations hardcoded ON. No config.");
         }
 
         private void Update()

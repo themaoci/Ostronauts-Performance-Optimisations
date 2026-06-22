@@ -189,9 +189,9 @@ enumerator.
 caller often logs a warning. The same missing names are re-queried every
 frame.
 
-**Mod fix:** `Patch_SuppressInteractionLog` keeps a bounded `HashSet<string>`
-(`MAX_MISSING = 4096`) of known-missing names. On a hit it returns null
-immediately. When the set fills, it clears and starts over.
+**Mod fix (DISABLED):** `Patch_SuppressInteractionLog` kept a bounded
+`ConcurrentDictionary<string, byte>` (`MAX_MISSING = 4096`) of known-missing
+names. Disabled — suspected of breaking multi-item purchases.
 
 **Recommended upstream fix:** Add `private static HashSet<string> _missingInteractions`
 on `DataHandler`. Cache misses. Clear on save load. Or, better, fix the callers

@@ -344,7 +344,6 @@ namespace OstronautsPerfOpt
             if (!PerfOptPlugin.GameLoaded)
             {
                 PerfOptPlugin.GameLoaded = true;
-                Patch_SuppressInteractionLog.ClearCache();
                 LogLoadPhase("GAME", "StarSystem.Update — game loaded detected");
             }
         }
