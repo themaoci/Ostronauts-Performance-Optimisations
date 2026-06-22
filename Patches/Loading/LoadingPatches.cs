@@ -702,20 +702,20 @@ namespace OstronautsPerfOpt
     }
 
     // ========================================
-    // SAVING: SaveGame preparation — GC suppression + optional backup
+    // SAVING: SaveGame preparation — optional backup only
     // ========================================
     // Before SaveGame runs:
-    //   1. Suppresses GC pauses by setting LowLatency mode. The Finalizer
-    //      (always-runs) restores the previous mode afterward.
-    //   2. Backs up the existing save directory for manual saves (not
-    //      autosave/quicksave), so the user can restore if Steam Cloud
-    //      overwrites a newer save with an older one.
+    //   Backs up the existing save directory for manual saves (not
+    //   autosave/quicksave), so the user can restore if Steam Cloud
+    //   overwrites a newer save with an older one.
+    //
+    // NOTE: GC suppression (LowLatency) was removed — the save operation
+    // serializes 36058+ COs and 140+ ships, allocating massive memory.
+    // Suppressing GC during this causes OOM crashes. GC pauses during
+    // save are acceptable.
     //
     // Backup naming: {savePath}_backup_{yyyyMMdd_HHmmss}
     // Only top-level files are copied (no subdirectories, no recursion).
-    // This is safe: the save directory only has flat files (save.zip,
-    // screenshot.png, crew portraits). Recursive copy on main thread
-    // would be a freeze risk.
 
     [HarmonyPatch]
     public class Patch_SaveGame_BeforeSave : PatchBase
@@ -725,9 +725,6 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(LoadManager), "SaveGame",
                 new Type[] { typeof(string), typeof(int), typeof(bool) });
         }
-
-        [ThreadStatic] private static GCLatencyMode _prevGCMode;
-        [ThreadStatic] private static bool _gcModeSaved;
 
         private static readonly string[] SkipBackupNames = new[]
         {
@@ -743,10 +740,6 @@ namespace OstronautsPerfOpt
         {
             long start = Tick();
             long memBefore = Mem();
-
-            _gcModeSaved = false;
-            try { _prevGCMode = GCSettings.LatencyMode; _gcModeSaved = true; } catch { }
-            try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; } catch { }
 
             try
             {
@@ -806,15 +799,6 @@ namespace OstronautsPerfOpt
             {
                 LogError("SAVE-BACKUP", $"Backup for '{saveName}'", ex);
             }
-        }
-
-        static Exception Finalizer(Exception __exception)
-        {
-            if (_gcModeSaved)
-            {
-                try { GCSettings.LatencyMode = _prevGCMode; } catch { }
-            }
-            return __exception;
         }
     }
 }
