@@ -163,7 +163,7 @@ namespace OstronautsPerfOpt
                 typeof(Patch_Cleanup),
                 typeof(Patch_FirstOrDefault),
                 typeof(Patch_UpdateStats),
-                typeof(Patch_SuppressInteractionLog),
+                // typeof(Patch_SuppressInteractionLog), // disabled — suspected of breaking multi-item purchases
                 typeof(Patch_CleanupExpire),
                 typeof(Patch_UpdateICOsParallelPrepass),
                 typeof(Patch_StarSystemUpdate_ToList),
