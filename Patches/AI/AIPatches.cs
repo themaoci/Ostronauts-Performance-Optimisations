@@ -895,7 +895,7 @@ namespace OstronautsPerfOpt
         {
             bool queueHasItems = __instance.aQueue != null && __instance.aQueue.Count > 0;
             bool altHeld = Input.GetKey(KeyCode.LeftAlt);
-            if (bPlayerOrdered && queueHasItems && !altHeld)
+            if (bPlayerOrdered && queueHasItems && altHeld)
                 _stackDepth++;
         }
 
