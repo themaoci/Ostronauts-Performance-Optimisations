@@ -557,10 +557,7 @@ namespace OstronautsPerfOpt
             {
                 if ((codes[i].opcode == OpCodes.Call || codes[i].opcode == OpCodes.Callvirt) &&
                     codes[i].operand is MethodInfo mi &&
-                    mi.Name == "Any" &&
-                    mi.DeclaringType != null &&
-                    (mi.DeclaringType == typeof(Enumerable) ||
-                     mi.DeclaringType.FullName == "System.Linq.Enumerable"))
+                    mi.Name == "Any")
                 {
                     codes[i] = new CodeInstruction(OpCodes.Call, containsMethod);
                     patchCount++;

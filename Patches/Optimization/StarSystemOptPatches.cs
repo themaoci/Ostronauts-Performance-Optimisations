@@ -201,19 +201,21 @@ namespace OstronautsPerfOpt
             {
                 if ((codes[i].opcode == OpCodes.Call || codes[i].opcode == OpCodes.Callvirt) &&
                     codes[i].operand is MethodInfo mi &&
-                    mi.Name == "FirstOrDefault" &&
-                    mi.DeclaringType != null &&
-                    (mi.DeclaringType == typeof(Enumerable) ||
-                     mi.DeclaringType.FullName == "System.Linq.Enumerable"))
+                    mi.Name == "FirstOrDefault")
                 {
-                    if ((codes[i + 1].opcode == OpCodes.Call || codes[i + 1].opcode == OpCodes.Callvirt) &&
-                        codes[i + 1].operand is MethodInfo mi2 &&
-                        mi2.Name == "get_Value")
+                    // Look ahead up to 3 instructions for get_Value
+                    for (int j = 1; j <= 3 && i + j < codes.Count; j++)
                     {
-                        codes[i] = new CodeInstruction(OpCodes.Call, _firstBOResultMethod);
-                        codes[i + 1] = new CodeInstruction(OpCodes.Nop);
-                        patchCount++;
-                        i++;
+                        if ((codes[i + j].opcode == OpCodes.Call || codes[i + j].opcode == OpCodes.Callvirt) &&
+                            codes[i + j].operand is MethodInfo mi2 &&
+                            mi2.Name == "get_Value")
+                        {
+                            codes[i] = new CodeInstruction(OpCodes.Call, _firstBOResultMethod);
+                            codes[i + j] = new CodeInstruction(OpCodes.Nop);
+                            patchCount++;
+                            i += j;
+                            break;
+                        }
                     }
                 }
             }
