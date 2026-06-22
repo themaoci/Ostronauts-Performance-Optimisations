@@ -188,54 +188,21 @@ namespace OstronautsPerfOpt
             return AccessTools.Method(typeof(StarSystem), "UpdateShip");
         }
 
-        private static readonly MethodInfo _firstBOResultMethod =
-            AccessTools.Method(typeof(Patch_UpdateShip_FirstBO_NoAlloc), "GetFirstBOValue");
-
-        static IEnumerable<CodeInstruction> Transpiler(
-            IEnumerable<CodeInstruction> instructions)
+        // Postfix replaces the FirstOrDefault().Value fallback with a no-alloc
+        // foreach (struct enumerator on Dictionary, no boxing). Vanilla does:
+        //     if (temp_boGrav == null)
+        //         temp_boGrav = aBOs.FirstOrDefault<...>().Value;
+        // FirstOrDefault on an empty dict returns default (null, null), so
+        // temp_boGrav stays null — same behavior as our Postfix.
+        static void Postfix(StarSystem __instance)
         {
-            var codes = new List<CodeInstruction>(instructions);
-            int patchCount = 0;
-
-            for (int i = 0; i < codes.Count - 1; i++)
+            if (__instance.temp_boGrav != null) return;
+            if (__instance.aBOs == null || __instance.aBOs.Count == 0) return;
+            foreach (var kvp in __instance.aBOs)
             {
-                if ((codes[i].opcode == OpCodes.Call || codes[i].opcode == OpCodes.Callvirt) &&
-                    codes[i].operand is MethodInfo mi &&
-                    mi.Name == "FirstOrDefault")
-                {
-                    // Look ahead up to 3 instructions for get_Value
-                    for (int j = 1; j <= 3 && i + j < codes.Count; j++)
-                    {
-                        if ((codes[i + j].opcode == OpCodes.Call || codes[i + j].opcode == OpCodes.Callvirt) &&
-                            codes[i + j].operand is MethodInfo mi2 &&
-                            mi2.Name == "get_Value")
-                        {
-                            codes[i] = new CodeInstruction(OpCodes.Call, _firstBOResultMethod);
-                            codes[i + j] = new CodeInstruction(OpCodes.Nop);
-                            patchCount++;
-                            i += j;
-                            break;
-                        }
-                    }
-                }
+                __instance.temp_boGrav = kvp.Value;
+                return;
             }
-
-            if (patchCount > 0)
-                PerfOptPlugin.Log.LogInfo(
-                    $"[GC-BO] StarSystem.UpdateShip: replaced {patchCount} FirstOrDefault().Value with no-alloc helper");
-            else
-                PerfOptPlugin.Log.LogInfo(
-                    "[GC-BO] StarSystem.UpdateShip: FirstOrDefault pattern not found");
-
-            return codes;
-        }
-
-        public static BodyOrbit GetFirstBOValue(Dictionary<string, BodyOrbit> dict)
-        {
-            if (dict == null) return null;
-            foreach (var kvp in dict)
-                return kvp.Value;
-            return null;
         }
     }
 
