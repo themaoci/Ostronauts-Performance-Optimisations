@@ -187,7 +187,7 @@ namespace OstronautsPerfOpt
                 typeof(Patch_UpdateManual_NoTickerLog),
                 typeof(Patch_InstallStart_KeepInventoryOpen),
                 typeof(Patch_GetAvailActions_KeepClickable),
-                typeof(Patch_GetMove2_Cache),
+                // typeof(Patch_GetMove2_Cache), // disabled — suspected of causing AI movement ping-pong
                 typeof(Patch_EndTurn_Throttle),
                 typeof(Patch_LogHandler_IsDuplicate),
                 typeof(Patch_LogHandler_TrimLog),
