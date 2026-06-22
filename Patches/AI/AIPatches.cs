@@ -21,7 +21,7 @@ namespace OstronautsPerfOpt
     // ========================================
 
     [HarmonyPatch]
-    public static class Patch_FirstOrDefault
+    public class Patch_FirstOrDefault : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -51,7 +51,7 @@ namespace OstronautsPerfOpt
     }
 
     [HarmonyPatch]
-    public static class Patch_SuppressInteractionLog
+    public class Patch_SuppressInteractionLog : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -106,7 +106,7 @@ namespace OstronautsPerfOpt
     }
 
     [HarmonyPatch]
-    public static class Patch_UpdateICOsParallelPrepass
+    public class Patch_UpdateICOsParallelPrepass : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -185,7 +185,7 @@ namespace OstronautsPerfOpt
     }
 
     [HarmonyPatch]
-    public static class Patch_CleanupExpire
+    public class Patch_CleanupExpire : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -292,7 +292,7 @@ namespace OstronautsPerfOpt
     // ========================================
 
     [HarmonyPatch]
-    public static class Patch_GetMove2_Cache
+    public class Patch_GetMove2_Cache : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -753,7 +753,7 @@ namespace OstronautsPerfOpt
     // placeholder for a future, safer optimization.
 
     [HarmonyPatch]
-    public static class Patch_EndTurn_Throttle
+    public class Patch_EndTurn_Throttle : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -779,7 +779,7 @@ namespace OstronautsPerfOpt
     // struct enumerator directly — no boxing).
 
     [HarmonyPatch]
-    public static class Patch_UpdateICOs_NoCopy
+    public class Patch_UpdateICOs_NoCopy : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -881,7 +881,7 @@ namespace OstronautsPerfOpt
     // by one as the queue empties.
 
     [HarmonyPatch]
-    public static class Patch_ClaimTaskDirect_QueueStack
+    public class Patch_ClaimTaskDirect_QueueStack : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -907,7 +907,7 @@ namespace OstronautsPerfOpt
     }
 
     [HarmonyPatch]
-    public static class Patch_AICancelAll_StackSkip
+    public class Patch_AICancelAll_StackSkip : PatchBase
     {
         static MethodBase TargetMethod()
         {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8,6 +9,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime;
 using System.Threading;
+using System.Threading.Tasks;
 using HarmonyLib;
 using UnityEngine;
 using Ostranauts.Core;
@@ -30,7 +32,7 @@ namespace OstronautsPerfOpt
     //   mod name tracking, complete flags — identical to original.
 
     [HarmonyPatch]
-    public static class Patch_ParallelLoad
+    public class Patch_ParallelLoad : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -44,8 +46,12 @@ namespace OstronautsPerfOpt
             if (!PerfOptPlugin.CfgParallelLoading)
                 return true;
 
+            long phaseStart = Tick();
+            long memBefore = Mem();
+            int gcBefore = GCs();
+
             s_loadSW.Restart();
-            PerfOptPlugin.Log.LogInfo("[PARLOAD] Starting parallel loading...");
+            LogLoadPhase("PARLOAD", "Starting parallel loading...");
 
             PerfOptPlugin.SuppressDebugLog = true;
             bool prevSuppressErrors = DataHandler.bSuppressGetErrors;
@@ -67,50 +73,65 @@ namespace OstronautsPerfOpt
                 __instance.loaderThreads.Add(Lt);
             }
 
+            // Count mods and files before distribution
+            int totalMods = LoadManager.LoadingQueue.Count;
+            int totalFileLoaders = 0;
+            for (int j = 0; j < totalMods; j++)
+                totalFileLoaders += LoadManager.LoadingQueue[j].fileLoaders.Count;
+
+            LogLoadPhase("PARLOAD", $"Queue: {totalMods} mods, {totalFileLoaders} fileLoaders, distributing ships...");
+
             // Distribute ONLY ships across LoaderThreads (original behavior)
             int RoundRobin = 0;
             int TotalShips = 0;
             DataHandler.toLoad = 0;
 
-            for (int j = 0; j < LoadManager.LoadingQueue.Count; j++)
+            for (int j = 0; j < totalMods; j++)
             {
                 ModLoader Mod = LoadManager.LoadingQueue[j];
-                for (int k = 0; k < Mod.ships.Count; k++)
+                int modShips = Mod.ships.Count;
+                for (int k = 0; k < modShips; k++)
                 {
                     Threads[RoundRobin % ThreadCount].fileLoaders.Add(Mod.ships[k]);
                     RoundRobin++;
                     TotalShips++;
                     DataHandler.toLoad++;
                 }
+                if (modShips > 0)
+                    LogLoadPhase("PARLOAD", $"  Mod '{Mod.JsonModInfo?.strName ?? "?"}': {modShips} ships");
             }
 
-            PerfOptPlugin.Log.LogInfo("[PARLOAD] Distributing " + TotalShips.ToString()
-                + " ships across " + ThreadCount.ToString() + " threads (fileLoaders stay sequential)");
+            LogLoadPhase("PARLOAD", $"Distributing {TotalShips} ships across {ThreadCount} threads (fileLoaders stay sequential)");
 
             // Start ship-loading threads
+            long threadStart = Tick();
             for (int i = 0; i < ThreadCount; i++)
             {
                 Threads[i].t = new Thread(Threads[i].Run);
                 Threads[i].t.IsBackground = true;
                 Threads[i].t.Start();
             }
+            LogLoadPhase("PARLOAD", $"Threads started in {ToMs(Tick() - threadStart):F1}ms");
 
-            // Process fileLoaders sequentially on calling thread (original behavior)
-            // Ships run in parallel in the background; fileLoaders run here.
-            // LoadingQueue is emptied in original order with per-file progress tracking.
+            // Process fileLoaders sequentially on calling thread
+            int fileLoaderCount = 0;
+            int fileLoaderErrors = 0;
             int PrevLoaded = 0;
+            long fileLoaderPhaseStart = Tick();
+
             while (LoadManager.LoadingQueue.Count > 0)
             {
                 ModLoader Mod = LoadManager.LoadingQueue[0];
                 LoadManager.LoadingQueue.RemoveAt(0);
                 if (Mod == null) continue;
 
+                string modName = Mod.JsonModInfo?.strName ?? "?";
+                long modStart = Tick();
+
                 if (Mod.JsonModInfo != null && !string.IsNullOrEmpty(Mod.JsonModInfo.strName))
                 {
                     lock (LoadManager.outputLock)
-                    {
                         LoadManager.modNamesStartedLoading.Add(Mod.JsonModInfo.strName);
-                    }
                 }
 
                 for (int l = 0; l < Mod.fileLoaders.Count; l++)
@@ -119,12 +140,12 @@ namespace OstronautsPerfOpt
                     {
                         if (LoadManager.mainLoadTerminate)
                         {
-                            // Set terminate flags (under handle locks) then Join outside
                             for (int i = 0; i < ThreadCount; i++)
                             {
                                 lock (Threads[i].handle)
                                     Threads[i].terminate = true;
                             }
+                            LogLoadPhase("PARLOAD", $"Terminated during fileLoader phase ({fileLoaderCount} processed)");
                             return false;
                         }
                     }
@@ -132,8 +153,17 @@ namespace OstronautsPerfOpt
                     FileLoader fileLoader = Mod.fileLoaders[l];
                     if (fileLoader != null)
                     {
-                        try { fileLoader.loadDelegate(); }
-                        catch (Exception ex) { PerfOptPlugin.Log.LogWarning($"[PARLOAD] fileLoader failed: {ex.Message}"); }
+                        long flStart = Tick();
+                        try
+                        {
+                            fileLoader.loadDelegate();
+                            fileLoaderCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            fileLoaderErrors++;
+                            LogError("PARLOAD", $"fileLoader '{fileLoader.fileName}'", ex);
+                        }
 
                         lock (LoadManager.outputLock)
                         {
@@ -152,19 +182,14 @@ namespace OstronautsPerfOpt
                 if (Mod.JsonModInfo != null && !string.IsNullOrEmpty(Mod.JsonModInfo.strName))
                 {
                     lock (LoadManager.outputLock)
-                    {
                         LoadManager.modNamesCompletedLoading.Add(Mod.JsonModInfo.strName);
-                    }
                 }
-                Mod.complete = true;
                 Mod.complete = true;
 
                 // Update progress from parallel ship loading too
                 int CurrentLoaded;
                 lock (LoadManager.outputLock)
-                {
                     CurrentLoaded = LoadManager.fileNamesLoaded.Count;
-                }
                 if (CurrentLoaded != PrevLoaded)
                 {
                     DataHandler.loaded = CurrentLoaded;
@@ -172,28 +197,32 @@ namespace OstronautsPerfOpt
                 }
             }
 
+            LogLoadPhaseTimed("PARLOAD", $"FileLoaders done: {fileLoaderCount} files, {fileLoaderErrors} errors", fileLoaderPhaseStart);
+
             // Join ship-loading threads
+            long joinStart = Tick();
             for (int i = 0; i < ThreadCount; i++)
             {
                 if (Threads[i].t != null && Threads[i].t.IsAlive)
                     Threads[i].t.Join();
             }
+            LogLoadPhaseTimed("PARLOAD", $"Thread join complete", joinStart);
 
             lock (LoadManager.outputLock)
-            {
                 DataHandler.loaded = LoadManager.fileNamesLoaded.Count;
-            }
 
+            long postLoadStart = Tick();
             DataHandler.AllPostLoadAsync();
             DataHandler.bAsyncLoaded = true;
+            LogLoadPhaseTimed("PARLOAD", "AllPostLoadAsync complete", postLoadStart);
 
             PerfOptPlugin.SuppressDebugLog = false;
             DataHandler.bSuppressGetErrors = prevSuppressErrors;
 
             s_loadSW.Stop();
-            PerfOptPlugin.Log.LogInfo("[PARLOAD] Complete in "
-                + ((double)s_loadSW.ElapsedMilliseconds / 1000.0).ToString("F2")
-                + "s (" + TotalShips.ToString() + " ships parallel, fileLoaders sequential)");
+            float totalSec = (float)((double)s_loadSW.ElapsedMilliseconds / 1000.0);
+            LogTimedMB("PARLOAD", $"Complete in {totalSec:F2}s ({TotalShips} ships parallel, {fileLoaderCount} fileLoaders sequential)",
+                phaseStart, memBefore, gcBefore);
 
             return false;
         }
@@ -218,7 +247,7 @@ namespace OstronautsPerfOpt
     // eliminating the 1-ship-per-frame bottleneck.
 
     [HarmonyPatch]
-    public static class Patch_DoLoadGame_BatchYields
+    public class Patch_DoLoadGame_BatchYields : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -230,8 +259,12 @@ namespace OstronautsPerfOpt
 
         static bool Prefix(CrewSim __instance, string fileName, string strShipsFolder, Dictionary<string, byte[]> dictFiles)
         {
+            long phaseStart = Tick();
+            long memBefore = Mem();
+            int gcBefore = GCs();
+
             var sw = Stopwatch.StartNew();
-            PerfOptPlugin.Log.LogInfo("[SAVE-LOAD] Starting save loading...");
+            LogLoadPhase("SAVE-LOAD", $"Starting save loading... file={fileName} shipsFolder={strShipsFolder}");
             LoadingProfiler.Start();
 
             PerfOptPlugin.SuppressDebugLog = true;
@@ -239,8 +272,7 @@ namespace OstronautsPerfOpt
             DataHandler.bSuppressGetErrors = true;
             PerfOptPlugin.IsLoading = true;
 
-            long memBefore = GC.GetTotalMemory(false);
-            PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Pre-load: M={memBefore / 1048576}MB GC={GC.CollectionCount(0)}");
+            LogLoadPhase("SAVE-LOAD", $"Pre-load: M={MemMB()}MB GC={gcBefore} dictFiles={dictFiles?.Count ?? 0} entries");
 
             try
             {
@@ -248,28 +280,38 @@ namespace OstronautsPerfOpt
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 GC.Collect();
-                long memClean = GC.GetTotalMemory(false);
-                PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Cleaned: M={memClean / 1048576}MB (freed {(memBefore - memClean) / 1048576}MB)");
+                long memClean = Mem();
+                LogLoadPhase("SAVE-LOAD", $"Cleaned: M={memClean / 1048576L}MB (freed {(memBefore - memClean) / 1048576L}MB)");
             }
             catch { }
 
+            long invokeStart = Tick();
             var enumerator = (IEnumerator)AccessTools.Method(typeof(CrewSim), "DoLoadGame")
                 .Invoke(__instance, new object[] { fileName, strShipsFolder, dictFiles });
+            LogLoadPhaseTimed("SAVE-LOAD", "DoLoadGame enumerator created", invokeStart);
 
             if (enumerator != null)
             {
-                __instance.StartCoroutine(BatchedCoroutineLoad(__instance, enumerator, sw, prevSuppress));
+                __instance.StartCoroutine(BatchedCoroutineLoad(__instance, enumerator, sw, prevSuppress, phaseStart, memBefore, gcBefore));
                 __instance.StartCoroutine(LoadingGcSweep());
+            }
+            else
+            {
+                LogError("SAVE-LOAD", "DoLoadGame", new Exception("enumerator was null — LoadGame returned null"));
             }
             return false;
         }
 
         private static IEnumerator BatchedCoroutineLoad(CrewSim instance, IEnumerator inner,
-            Stopwatch sw, bool prevSuppress)
+            Stopwatch sw, bool prevSuppress, long phaseStart, long memBefore, int gcBefore)
         {
             var stack = new Stack<IEnumerator>();
             stack.Push(inner);
             int steps = 0;
+            int totalSteps = 0;
+            int nestedCount = 0;
+            int errorCount = 0;
+            long lastLogTick = Tick();
 
             while (stack.Count > 0)
             {
@@ -278,7 +320,8 @@ namespace OstronautsPerfOpt
                 try { moved = current.MoveNext(); }
                 catch (Exception ex)
                 {
-                    PerfOptPlugin.Log.LogWarning($"[LOAD-BATCH] Coroutine exception: {ex.Message}");
+                    errorCount++;
+                    LogError("LOAD-BATCH", $"Coroutine exception (depth={stack.Count})", ex);
                     stack.Pop();
                     continue;
                 }
@@ -291,9 +334,11 @@ namespace OstronautsPerfOpt
 
                 object yielded = current.Current;
                 steps++;
+                totalSteps++;
 
                 if (yielded is IEnumerator nested)
                 {
+                    nestedCount++;
                     stack.Push(nested);
                     continue;
                 }
@@ -308,18 +353,22 @@ namespace OstronautsPerfOpt
                     steps = 0;
                     yield return null;
                 }
+
+                // Log progress every 5000 steps
+                if (totalSteps % 5000 == 0)
+                {
+                    float rate = totalSteps / ToMs(Tick() - lastLogTick) * 1000f;
+                    lastLogTick = Tick();
+                    LogLoadPhase("LOAD-BATCH", $"Progress: {totalSteps} steps, {nestedCount} nested, {errorCount} errors, {rate:F0} steps/s");
+                }
             }
 
-            // Force a frame, then restore the vanilla finalization sequence:
-            //   1. Fire OnGameFinishedLoading  (before Paused changes — triggers EnableCrewsimMaps, etc.)
-            //   2. Paused = false              (one frame of unpaused processing)
-            //   3. ForceUpdateAnimators()      (updates animator states during the unpaused frame)
-            //   4. yield return null            (let Unity process the unpaused frame)
-            //   5. Paused = true               (re-pause the game)
-            //   6. _finishedLoading = true     (mark loading complete)
+            LogLoadPhase("LOAD-BATCH", $"Coroutine complete: {totalSteps} total steps, {nestedCount} nested, {errorCount} errors");
+
+            // Force a frame, then restore the vanilla finalization sequence
+            long finalizeStart = Tick();
             try
             {
-                // Step 1: Fire OnGameFinishedLoading (before state changes)
                 var fiEvent = AccessTools.Field(typeof(CrewSim), "OnGameFinishedLoading");
                 if (fiEvent != null)
                 {
@@ -330,7 +379,6 @@ namespace OstronautsPerfOpt
             }
             catch { }
 
-            // Step 2-3: Unpause + update animators
             try { CrewSim.Paused = false; } catch { }
             try
             {
@@ -339,10 +387,8 @@ namespace OstronautsPerfOpt
             }
             catch { }
 
-            // Step 4: One frame of unpaused processing
             yield return null;
 
-            // Step 5-6: Re-pause and mark complete
             try { CrewSim.Paused = true; } catch { }
             try
             {
@@ -351,43 +397,46 @@ namespace OstronautsPerfOpt
                     fiFinished.SetValue(instance, true);
             }
             catch { }
-            PerfOptPlugin.Log.LogInfo("[LOAD-BATCH] Finalized: OnGameFinishedLoading -> Paused=false -> ForceUpdateAnimators -> yield -> Paused=true -> _finishedLoading=true");
+            LogLoadPhaseTimed("LOAD-BATCH", "Finalized: OnGameFinishedLoading -> Paused=false -> ForceUpdateAnimators -> yield -> Paused=true -> _finishedLoading=true", finalizeStart);
 
             PerfOptPlugin.SuppressDebugLog = false;
             DataHandler.bSuppressGetErrors = prevSuppress;
             PerfOptPlugin.IsLoading = false;
 
-            long memAfter = GC.GetTotalMemory(false);
+            long memAfter = Mem();
             try
             {
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 GC.Collect();
-                long memFreed = memAfter - GC.GetTotalMemory(false);
-                PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Post-clean: M={memAfter / 1048576}>{GC.GetTotalMemory(false) / 1048576}MB (freed {memFreed / 1048576}MB)");
+                long memFreed = memAfter - Mem();
+                LogLoadPhase("SAVE-LOAD", $"Post-clean: M={memAfter / 1048576L}>{MemMB()}MB (freed {memFreed / 1048576L}MB)");
             }
             catch { }
 
             sw.Stop();
             LoadingProfiler.Stop();
-            PerfOptPlugin.Log.LogInfo($"[SAVE-LOAD] Complete in "
-                + ((double)sw.ElapsedMilliseconds / 1000.0).ToString("F2") + "s");
+            LogTimedMB("SAVE-LOAD", $"Complete in {(double)sw.ElapsedMilliseconds / 1000.0:F2}s",
+                phaseStart, memBefore, gcBefore);
         }
 
         private static IEnumerator LoadingGcSweep()
         {
             var gen1Timer = new Stopwatch();
             gen1Timer.Start();
+            int gcCount = 0;
             while (PerfOptPlugin.IsLoading)
             {
                 yield return new WaitForSeconds(0.25f);
                 GC.Collect(0);
+                gcCount++;
 
-                long memMB = GC.GetTotalMemory(false) / 1048576;
+                long memMB = MemMB();
                 if (gen1Timer.ElapsedMilliseconds >= 1500 || memMB > 1500)
                 {
                     gen1Timer.Restart();
                     GC.Collect(1);
+                    LogLoadPhase("LOAD-GC", $"Gen1 sweep #{gcCount}: M={memMB}MB");
                 }
             }
         }
@@ -410,7 +459,7 @@ namespace OstronautsPerfOpt
     // Station ships come from aShips (processed later).
 
     [HarmonyPatch]
-    public static class Patch_SkipDuplicateStationSpawn
+    public class Patch_SkipDuplicateStationSpawn : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -445,13 +494,12 @@ namespace OstronautsPerfOpt
                 if (duplicates > 0)
                 {
                     objSystem.aSpawnStations = null;
-                    PerfOptPlugin.Log.LogInfo(
-                        $"[LOAD-SKIP] Skipping {stationCount} station spawns ({duplicates} already in aShips) — saves {duplicates}x InitShip(Shallow)");
+                    LogLoadPhase("LOAD-SKIP", $"Skipping {stationCount} station spawns ({duplicates} already in aShips) — saves {duplicates}x InitShip(Shallow)");
                 }
             }
             catch (Exception ex)
             {
-                PerfOptPlugin.Log.LogWarning($"[LOAD-SKIP] Failed: {ex.Message}");
+                LogError("LOAD-SKIP", "SkipDuplicateStationSpawn", ex);
             }
         }
     }
@@ -485,7 +533,7 @@ namespace OstronautsPerfOpt
     // a warning and vanilla runs unchanged.
 
     [HarmonyPatch]
-    public static class Patch_DoLoadGame_FastOrphanScan
+    public class Patch_DoLoadGame_FastOrphanScan : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -507,10 +555,12 @@ namespace OstronautsPerfOpt
             int patchCount = 0;
             for (int i = 0; i < codes.Count; i++)
             {
-                if (codes[i].opcode == OpCodes.Call &&
+                if ((codes[i].opcode == OpCodes.Call || codes[i].opcode == OpCodes.Callvirt) &&
                     codes[i].operand is MethodInfo mi &&
                     mi.Name == "Any" &&
-                    mi.DeclaringType == typeof(Enumerable))
+                    mi.DeclaringType != null &&
+                    (mi.DeclaringType == typeof(Enumerable) ||
+                     mi.DeclaringType.FullName == "System.Linq.Enumerable"))
                 {
                     codes[i] = new CodeInstruction(OpCodes.Call, containsMethod);
                     patchCount++;
@@ -518,10 +568,11 @@ namespace OstronautsPerfOpt
             }
 
             if (patchCount > 0)
-                PerfOptPlugin.Log.LogInfo(
-                    $"[LOAD-CO] DoLoadGame: replaced {patchCount} aShips.Any() with cached HashSet.Contains()");
+                LogPatchResult("DoLoadGame_FastOrphanScan", true,
+                    $"replaced {patchCount} aShips.Any() with cached HashSet.Contains()");
             else
-                PerfOptPlugin.Log.LogInfo("[LOAD-CO] DoLoadGame: Any() call not found in IL");
+                LogPatchResult("DoLoadGame_FastOrphanScan", true,
+                    "Any() call not found in IL (game may have updated)");
 
             return codes;
         }
@@ -559,7 +610,7 @@ namespace OstronautsPerfOpt
     // This patch forces useThreading=true for ALL SaveGame calls.
 
     [HarmonyPatch]
-    public static class Patch_SaveGame_Threaded
+    public class Patch_SaveGame_Threaded : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -575,7 +626,7 @@ namespace OstronautsPerfOpt
             if (!useThreading)
             {
                 useThreading = true;
-                PerfOptPlugin.Log.LogInfo("[SAVE] Forcing threaded save (was synchronous)");
+                LogLoadPhase("SAVE", "Forcing threaded save (was synchronous)");
             }
         }
     }
@@ -595,7 +646,7 @@ namespace OstronautsPerfOpt
     // a single save failure permanently blocks all future saves.
 
     [HarmonyPatch]
-    public static class Patch_OnCreateSave_Guard
+    public class Patch_OnCreateSave_Guard : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -606,15 +657,12 @@ namespace OstronautsPerfOpt
         {
             if (Interlocked.CompareExchange(ref Patch_SaveGuard._saveInProgress, 1, 0) != 0)
             {
-                PerfOptPlugin.Log.LogWarning("[SAVE] Save already in progress, ignoring OnCreateSave");
+                Log.LogWarning("[SAVE] Save already in progress, ignoring OnCreateSave");
                 return false;
             }
             return true;
         }
 
-        // Finalizer runs EVEN IF the original method throws — guarantees
-        // _saveInProgress is always reset, preventing softlock on saves.
-        // Returns __exception to pass through the error so the game still sees it.
         static Exception Finalizer(Exception __exception)
         {
             Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
@@ -623,7 +671,7 @@ namespace OstronautsPerfOpt
     }
 
     [HarmonyPatch]
-    public static class Patch_OnOverwrite_Guard
+    public class Patch_OnOverwrite_Guard : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -634,7 +682,7 @@ namespace OstronautsPerfOpt
         {
             if (Interlocked.CompareExchange(ref Patch_SaveGuard._saveInProgress, 1, 0) != 0)
             {
-                PerfOptPlugin.Log.LogWarning("[SAVE] Save already in progress, ignoring OnOverwrite");
+                Log.LogWarning("[SAVE] Save already in progress, ignoring OnOverwrite");
                 return false;
             }
             return true;
@@ -670,7 +718,7 @@ namespace OstronautsPerfOpt
     // would be a freeze risk.
 
     [HarmonyPatch]
-    public static class Patch_SaveGame_BeforeSave
+    public class Patch_SaveGame_BeforeSave : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -678,17 +726,14 @@ namespace OstronautsPerfOpt
                 new Type[] { typeof(string), typeof(int), typeof(bool) });
         }
 
-        // Save the previous GC mode so Finalizer can restore it exactly
         [ThreadStatic] private static GCLatencyMode _prevGCMode;
         [ThreadStatic] private static bool _gcModeSaved;
 
-        // Save names that are NOT backed up (autosaves, quicksaves, etc.)
         private static readonly string[] SkipBackupNames = new[]
         {
             "autosave", "quicksave", "autosave_"
         };
 
-        // Track last backup time per save slot to throttle to once per 60s
         private static readonly Dictionary<string, double> _lastBackupTime =
             new Dictionary<string, double>();
         private static readonly object _backupLock = new object();
@@ -696,18 +741,18 @@ namespace OstronautsPerfOpt
 
         static void Prefix(string saveName)
         {
-            // Step 1: Save previous GC mode, suppress GC during save
+            long start = Tick();
+            long memBefore = Mem();
+
             _gcModeSaved = false;
             try { _prevGCMode = GCSettings.LatencyMode; _gcModeSaved = true; } catch { }
             try { GCSettings.LatencyMode = GCLatencyMode.LowLatency; } catch { }
 
-            // Step 2: Backup existing save (manual saves only)
             try
             {
                 if (!PerfOptPlugin.CfgSaveBackup) return;
                 if (string.IsNullOrEmpty(saveName)) return;
 
-                // Skip autosaves and quicksaves
                 string nameLower = saveName.ToLowerInvariant();
                 for (int i = 0; i < SkipBackupNames.Length; i++)
                 {
@@ -715,7 +760,6 @@ namespace OstronautsPerfOpt
                         return;
                 }
 
-                // Resolve save directory
                 string saveDir = null;
                 if (saveName.IndexOfAny(new[] { '\\', '/' }) >= 0)
                 {
@@ -732,7 +776,6 @@ namespace OstronautsPerfOpt
                 if (saveDir == null || !Directory.Exists(saveDir))
                     return;
 
-                // Throttle: don't backup the same save more than once per 60s
                 double now = Time.realtimeSinceStartupAsDouble;
                 lock (_backupLock)
                 {
@@ -748,7 +791,6 @@ namespace OstronautsPerfOpt
                 string backupDir = saveDir.TrimEnd('\\', '/')
                     + "_backup_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
 
-                // Flat copy: only top-level files (save.zip, screenshots, portraits)
                 Directory.CreateDirectory(backupDir);
                 string[] files = Directory.GetFiles(saveDir);
                 for (int i = 0; i < files.Length; i++)
@@ -757,17 +799,15 @@ namespace OstronautsPerfOpt
                     File.Copy(files[i], destFile, true);
                 }
 
-                PerfOptPlugin.Log.LogInfo(
-                    $"[SAVE-BACKUP] Backed up '{saveDir}' -> '{backupDir}'");
+                LogTimed("SAVE-BACKUP", $"Backed up '{saveDir}' -> '{backupDir}'",
+                    start, memBefore, GCs());
             }
             catch (Exception ex)
             {
-                PerfOptPlugin.Log.LogWarning($"[SAVE-BACKUP] Failed: {ex.Message}");
+                LogError("SAVE-BACKUP", $"Backup for '{saveName}'", ex);
             }
         }
 
-        // Finalizer always runs — restores GC mode even if save throws
-        // Returns __exception to pass through errors so the game still sees them.
         static Exception Finalizer(Exception __exception)
         {
             if (_gcModeSaved)

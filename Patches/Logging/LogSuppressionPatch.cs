@@ -31,7 +31,7 @@ namespace OstronautsPerfOpt
     // user actually reads — including the entries right before a crash.
 
     [HarmonyPatch]
-    public static class Patch_DebugLog_Suppress
+    public class Patch_DebugLog_Suppress : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -41,7 +41,8 @@ namespace OstronautsPerfOpt
 
         static bool Prefix(string message)
         {
-            // Suppress info logs during loading; pass through normally otherwise
+            // Suppress Debug.Log during parallel loading (not thread-safe)
+            // Also suppress during normal loading to reduce log spam
             if (PerfOptPlugin.SuppressDebugLog)
                 return false;
             return true;
@@ -49,7 +50,7 @@ namespace OstronautsPerfOpt
     }
 
     [HarmonyPatch]
-    public static class Patch_DebugLogWarning_Passthrough
+    public class Patch_DebugLogWarning_Passthrough : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -59,31 +60,18 @@ namespace OstronautsPerfOpt
 
         static bool Prefix(string message)
         {
-            if (PerfOptPlugin.SuppressDebugLog)
-                return false;
-
-            if (message != null &&
-                (message.IndexOf("SysLootSpawnerLot", StringComparison.Ordinal) >= 0 ||
-                 message.IndexOf("missing save data", StringComparison.Ordinal) >= 0))
-                return false;
-
+            // DISABLED: always pass through so game logs are visible
             return true;
         }
 
         static void Postfix(string message)
         {
-            if (PerfOptPlugin.SuppressDebugLog) return;
-            if (message != null &&
-                (message.IndexOf("SysLootSpawnerLot", StringComparison.Ordinal) >= 0 ||
-                 message.IndexOf("missing save data", StringComparison.Ordinal) >= 0))
-                return;
-            try { PerfOptPlugin.Log.LogWarning("[game] " + message); }
-            catch { }
+            // DISABLED: always pass through so game logs are visible
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_DebugLogError_Passthrough
+    public class Patch_DebugLogError_Passthrough : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -95,6 +83,29 @@ namespace OstronautsPerfOpt
         {
             try { PerfOptPlugin.Log.LogError("[game] " + message); }
             catch { }
+        }
+    }
+
+    // ========================================
+    // DEBUG.BREAK SUPPRESSION — not thread-safe from background threads
+    // ========================================
+    // Debug.Break() pauses the Unity editor. Called from
+    // CondOwnerVisitorLazyOrCondTrigger when CondTriggers array is empty.
+    // Suppress during parallel loading to prevent crashes from background threads.
+
+    [HarmonyPatch]
+    public class Patch_DebugBreak_Suppress : PatchBase
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(Debug), "Break");
+        }
+
+        static bool Prefix()
+        {
+            if (PerfOptPlugin.SuppressDebugLog)
+                return false;
+            return true;
         }
     }
 
@@ -114,7 +125,7 @@ namespace OstronautsPerfOpt
     // common "not a duplicate" path; no Split array.
 
     [HarmonyPatch]
-    public static class Patch_LogHandler_IsDuplicate
+    public class Patch_LogHandler_IsDuplicate : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -191,7 +202,7 @@ namespace OstronautsPerfOpt
     // finds the cutoff marker position, and Substrings once. Zero array alloc.
 
     [HarmonyPatch]
-    public static class Patch_LogHandler_TrimLog
+    public class Patch_LogHandler_TrimLog : PatchBase
     {
         static MethodBase TargetMethod()
         {

@@ -10,7 +10,7 @@ using Ostranauts.Core;
 namespace OstronautsPerfOpt
 {
     [HarmonyPatch]
-    public static class Patch_StarInit_ParallelShipSpawn
+    public class Patch_StarInit_ParallelShipSpawn : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -23,8 +23,7 @@ namespace OstronautsPerfOpt
         {
             if (result == null)
             {
-                PerfOptPlugin.Log.LogWarning(
-                    "[PAR-SPAWN] StarSystem.Init enumerator was null — no ship spawning");
+                LogLoadPhase("PAR-SPAWN", "StarSystem.Init enumerator was null — no ship spawning");
                 return null;
             }
             return ParallelBatchedInit(result, aShips);
@@ -43,14 +42,19 @@ namespace OstronautsPerfOpt
             IEnumerator inner, JsonShip[] aShips)
         {
             int shipCount = aShips?.Length ?? 0;
+            long phaseStart = Tick();
+            long memBefore = Mem();
+            int gcBefore = GCs();
 
-            // Phase 1: Consume the original enumerator's yields.
-            // Per-ship yields (null) are consumed without yielding to Unity.
-            // Track ship-specific yields and preserve the last non-null value
-            // for proper outer-coroutine protocol.
+            LogLoadPhase("PAR-SPAWN", $"Starting parallel ship spawn: {shipCount} ships");
+
+            // Phase 1: Consume the original enumerator's yields
             {
                 int shipYields = 0;
+                int nonNullYields = 0;
                 object lastNonNull = null;
+                long yieldStart = Tick();
+
                 while (inner.MoveNext())
                 {
                     object yielded = inner.Current;
@@ -61,39 +65,43 @@ namespace OstronautsPerfOpt
                         continue;
                     }
 
-                    // Non-null: progress bar update or final yield return true
+                    nonNullYields++;
                     lastNonNull = yielded;
                     yield return yielded;
                 }
 
-                // If we consumed all ship yields without a final non-null yield,
-                // emit the preserved lastNonNull (or true as fallback)
+                LogLoadPhaseTimed("PAR-SPAWN",
+                    $"Phase 1 done: {shipYields} ship yields, {nonNullYields} non-null yields",
+                    yieldStart);
+
                 if (shipYields > 0 && lastNonNull == null)
-                {
                     yield return true;
-                }
             }
 
             // Phase 2: Parallel post-processing (RectifyBrokenIDs)
             if (shipCount >= MinParallelBatch && _rectifyMethod != null)
             {
+                long phase2Start = Tick();
                 try
                 {
                     var system = CrewSim.system;
                     if (system == null)
                     {
-                        PerfOptPlugin.Log.LogWarning(
-                            "[PAR-SPAWN] CrewSim.system is null — skipping parallel post-process");
+                        LogLoadPhase("PAR-SPAWN", "CrewSim.system is null — skipping parallel post-process");
                         yield break;
                     }
 
                     var dict = _dictShipsField?.GetValue(system)
                         as Dictionary<string, Ship>;
                     if (dict == null || dict.Count == 0)
+                    {
+                        LogLoadPhase("PAR-SPAWN", "dictShips is null/empty — skipping parallel post-process");
                         yield break;
+                    }
 
                     var keys = new List<string>(dict.Keys);
                     int processed = 0;
+                    int errors = 0;
                     System.Threading.Tasks.Parallel.ForEach(keys, regID =>
                     {
                         Ship ship = null;
@@ -109,19 +117,18 @@ namespace OstronautsPerfOpt
                         }
                         catch (Exception ex)
                         {
-                            PerfOptPlugin.Log.LogWarning(
-                                $"[PAR-SPAWN] Post-process failed for {regID}: {ex.Message}");
+                            System.Threading.Interlocked.Increment(ref errors);
+                            LogError("PAR-SPAWN", $"Post-process failed for {regID}", ex);
                         }
                     });
 
-                    if (processed > 0)
-                        PerfOptPlugin.Log.LogInfo(
-                            $"[PAR-SPAWN] Parallel post-processed {processed} ships");
+                    LogLoadPhaseTimed("PAR-SPAWN",
+                        $"Phase 2 done: parallel post-processed {processed} ships, {errors} errors",
+                        phase2Start);
                 }
                 catch (Exception ex)
                 {
-                    PerfOptPlugin.Log.LogWarning(
-                        $"[PAR-SPAWN] Parallel phase failed: {ex.Message}");
+                    LogError("PAR-SPAWN", "Parallel phase", ex);
                 }
             }
 
@@ -136,6 +143,8 @@ namespace OstronautsPerfOpt
                 }
                 catch { }
             }
+
+            LogTimedMB("PAR-SPAWN", $"Complete: {shipCount} ships", phaseStart, memBefore, gcBefore);
         }
     }
 }

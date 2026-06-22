@@ -17,7 +17,7 @@ namespace OstronautsPerfOpt
     // ========================================
 
     [HarmonyPatch]
-    public static class Patch_AdvanceSim
+    public class Patch_AdvanceSim : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -29,12 +29,12 @@ namespace OstronautsPerfOpt
 
         static bool Prefix(ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
 
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
 
             PerfOptPlugin.SimStepsThisFrame++;
@@ -48,22 +48,22 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TAdvanceSim += Elapsed;
             PerfOptPlugin.CAdvanceSim++;
 
-            float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
+            float Ms = ToMs(Elapsed);
             if (Ms > 100f)
             {
-                PerfOptPlugin.Log.LogWarning("[SIM-DIAG] AdvanceSim " + Ms.ToString("F1") + "ms GC=" + (GC.CollectionCount(0) != _gcBefore ? "Y" : "N") + " MemDelta=" + ((GC.GetTotalMemory(false) - _memBefore) / 1048576L).ToString() + "MB");
+                Log.LogWarning($"[SIM-DIAG] AdvanceSim {Ms:F1}ms GC={(GCs() != _gcBefore ? "Y" : "N")} MemDelta={((Mem() - _memBefore) / 1048576L)}MB");
             }
 
-            if (GC.CollectionCount(0) == _gcBefore)
+            if (GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocAdvanceSim += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_UpdateICOs
+    public class Patch_UpdateICOs : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -72,7 +72,7 @@ namespace OstronautsPerfOpt
 
         static void Prefix(ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
         }
 
         static void Postfix(long __state)
@@ -82,16 +82,16 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TICO += Elapsed;
             PerfOptPlugin.CICO++;
 
-            float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
+            float Ms = ToMs(Elapsed);
             if (Ms > 50f)
             {
-                PerfOptPlugin.Log.LogWarning("[SIM-DIAG] UpdateICOs " + Ms.ToString("F1") + "ms");
+                Log.LogWarning($"[SIM-DIAG] UpdateICOs {Ms:F1}ms");
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_EndTurn
+    public class Patch_EndTurn : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -103,11 +103,11 @@ namespace OstronautsPerfOpt
 
         static void Prefix(CondOwner __instance, ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
         }
 
@@ -116,23 +116,23 @@ namespace OstronautsPerfOpt
             long Elapsed = Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.TEndTurn += Elapsed;
             PerfOptPlugin.CEndTurn++;
-            float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
+            float Ms = ToMs(Elapsed);
             if (Ms > 20f)
             {
-                PerfOptPlugin.Log.LogInfo(
+                Log.LogInfo(
                     $"[SIM-DIAG] EndTurn {Ms:F1}ms CO={__instance.strName} ({__instance.strNameFriendly}) type={__instance.GetType().Name}");
             }
 
-            if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
+            if (PerfOptPlugin.IsProfiling && GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocEndTurn += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_GetMove2
+    public class Patch_GetMove2 : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -144,11 +144,11 @@ namespace OstronautsPerfOpt
 
         static void Prefix(CondOwner __instance, ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
         }
 
@@ -157,23 +157,23 @@ namespace OstronautsPerfOpt
             long Elapsed = Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.TGetMove2 += Elapsed;
             PerfOptPlugin.CGetMove2++;
-            float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
+            float Ms = ToMs(Elapsed);
             if (Ms > 20f)
             {
-                PerfOptPlugin.Log.LogWarning(
+                Log.LogWarning(
                     $"[SIM-DIAG] GetMove2 {Ms:F1}ms CO={__instance.strName} ({__instance.strNameFriendly}) type={__instance.GetType().Name}");
             }
 
-            if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
+            if (PerfOptPlugin.IsProfiling && GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocGetMove2 += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_GetWork
+    public class Patch_GetWork : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -185,11 +185,11 @@ namespace OstronautsPerfOpt
 
         static void Prefix(object __instance, ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
         }
 
@@ -200,22 +200,22 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TGetWork += Elapsed;
             PerfOptPlugin.CGetWork++;
 
-            float Ms = (float)((double)Elapsed / (double)Stopwatch.Frequency * 1000.0);
+            float Ms = ToMs(Elapsed);
             if (Ms > 50f)
             {
-                PerfOptPlugin.Log.LogWarning("[SIM-DIAG] GetWork " + Ms.ToString("F1") + "ms " + (__instance != null ? __instance.GetType().Name : "null"));
+                Log.LogWarning($"[SIM-DIAG] GetWork {Ms:F1}ms {(__instance != null ? __instance.GetType().Name : "null")}");
             }
 
-            if (PerfOptPlugin.IsProfiling && GC.CollectionCount(0) == _gcBefore)
+            if (PerfOptPlugin.IsProfiling && GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocGetWork += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_ParseCondLoot
+    public class Patch_ParseCondLoot : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -228,11 +228,11 @@ namespace OstronautsPerfOpt
 
         static void Prefix(ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
         }
 
@@ -242,16 +242,16 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TParseCL += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CParseCL++;
 
-            if (GC.CollectionCount(0) == _gcBefore)
+            if (GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocParseCL += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_Cleanup
+    public class Patch_Cleanup : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -263,11 +263,11 @@ namespace OstronautsPerfOpt
 
         static void Prefix(ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
         }
 
@@ -277,16 +277,16 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TCleanup += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CCleanup++;
 
-            if (GC.CollectionCount(0) == _gcBefore)
+            if (GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocCleanup += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_UpdateStats
+    public class Patch_UpdateStats : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -298,11 +298,11 @@ namespace OstronautsPerfOpt
 
         static void Prefix(ref long __state)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
         }
 
@@ -312,16 +312,16 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TUpdateStats += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CUpdateStats++;
 
-            if (GC.CollectionCount(0) == _gcBefore)
+            if (GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocUpdateStats += d;
             }
         }
     }
 
     [HarmonyPatch]
-    public static class Patch_StarSystemUpdate
+    public class Patch_StarSystemUpdate : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -333,20 +333,19 @@ namespace OstronautsPerfOpt
 
         static void Prefix(ref long __state, StarSystem __instance)
         {
-            __state = Stopwatch.GetTimestamp();
+            __state = Tick();
 
             if (PerfOptPlugin.IsProfiling)
             {
-                _memBefore = GC.GetTotalMemory(false);
-                _gcBefore = GC.CollectionCount(0);
+                _memBefore = Mem();
+                _gcBefore = GCs();
             }
 
             if (!PerfOptPlugin.GameLoaded)
             {
                 PerfOptPlugin.GameLoaded = true;
                 Patch_SuppressInteractionLog.ClearCache();
-                PerfOptPlugin.Log.LogInfo(
-                    "[GAME] StarSystem.Update — game loaded detected");
+                LogLoadPhase("GAME", "StarSystem.Update — game loaded detected");
             }
         }
 
@@ -357,9 +356,9 @@ namespace OstronautsPerfOpt
             PerfOptPlugin.TStarSys += Stopwatch.GetTimestamp() - __state;
             PerfOptPlugin.CStarSys++;
 
-            if (GC.CollectionCount(0) == _gcBefore)
+            if (GCs() == _gcBefore)
             {
-                long d = GC.GetTotalMemory(false) - _memBefore;
+                long d = Mem() - _memBefore;
                 if (d > 0) PerfOptPlugin.AllocStarSys += d;
             }
         }

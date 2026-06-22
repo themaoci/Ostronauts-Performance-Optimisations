@@ -27,7 +27,7 @@ namespace OstronautsPerfOpt
     // is not called (e.g., crash during teardown).
 
     [HarmonyPatch]
-    public static class Patch_OnApplicationQuit_FastExit
+    public class Patch_OnApplicationQuit_FastExit : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -73,42 +73,31 @@ namespace OstronautsPerfOpt
 
             PerfOptPlugin.Log.LogInfo("[QUIT] Fast exit — terminating process");
 
-            // Wait up to 3s for an in-progress save to finish before force-exit,
-            // then reset the save-guard flag so nothing blocks during teardown.
-            try
-            {
-                SpinWait.SpinUntil(() =>
-                {
-                    int cur = Interlocked.CompareExchange(
-                        ref Patch_SaveGuard._saveInProgress, 0, 0);
-                    return cur == 0;
-                }, 3000);
-            }
-            catch { }
+            // Reset save-guard flag so nothing blocks during teardown
             Interlocked.Exchange(ref Patch_SaveGuard._saveInProgress, 0);
 
             // Small delay to let the log flush
             System.Threading.Thread.Sleep(50);
 
+            // Use Process.Kill() first — it terminates immediately without
+            // running any cleanup code. Environment.Exit(0) from within
+            // Unity's OnApplicationQuit callback can deadlock because
+            // Unity is already in its own shutdown sequence.
             try
             {
-                Environment.Exit(0);
+                System.Diagnostics.Process.GetCurrentProcess().Kill();
             }
             catch
             {
-                // Environment.Exit may fail in some hosting environments
-                // Fall back to FailFast which is more aggressive
+                // Fallback: FailFast is more aggressive than Environment.Exit
                 try
                 {
                     Environment.FailFast("PerfOpt fast exit");
                 }
                 catch
                 {
-                    // Last resort: terminate the process directly
-                    try
-                    {
-                        System.Diagnostics.Process.GetCurrentProcess().Kill();
-                    }
+                    // Last resort
+                    try { Environment.Exit(0); }
                     catch { }
                 }
             }

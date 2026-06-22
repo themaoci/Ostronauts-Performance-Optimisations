@@ -30,7 +30,7 @@ namespace OstronautsPerfOpt
     // in-memory _loadedSave.ScreenShot being null is fine.
 
     [HarmonyPatch]
-    public static class Patch_SaveScreenShot_Defer
+    public class Patch_SaveScreenShot_Defer : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -39,30 +39,23 @@ namespace OstronautsPerfOpt
 
         static bool Prefix(ref Texture2D __result, string folderPath)
         {
-            try
-            {
-                LoadManager host = MonoSingleton<LoadManager>.Instance;
-                if (host != null)
-                {
-                    host.StartCoroutine(CaptureScreenshotCoroutine(host, folderPath));
-                }
-            }
-            catch (Exception ex)
-            {
-                PerfOptPlugin.Log.LogWarning($"[SAVE-SHOT] Could not start coroutine: {ex.Message}");
-            }
-            __result = null;
-            return false;
-        }
-
-        private static IEnumerator CaptureScreenshotCoroutine(LoadManager host, string folderPath)
-        {
-            yield return null;
-            if (host == null) yield break;
-
+            // Synchronous capture: GPU operations must run on main thread.
+            // PNG encode + file write are also done here — the 100-500ms
+            // freeze is acceptable during save. Deferring to a coroutine
+            // broke screenshots because the save system expects the file
+            // to exist immediately after SaveScreenShot returns.
             Camera mainCamera = GameRenderer.MainCamera;
-            if (mainCamera == null) yield break;
-            if (mainCamera.targetTexture != null) yield break; // camera in use by something else
+            if (mainCamera == null)
+            {
+                __result = null;
+                return false;
+            }
+            if (mainCamera.targetTexture != null)
+            {
+                // Camera already rendering to a target — can't capture
+                __result = null;
+                return false;
+            }
 
             int width = GameRenderer.Width;
             int height = GameRenderer.Height;
@@ -78,24 +71,27 @@ namespace OstronautsPerfOpt
                 RenderTexture.active = rt;
                 tex.ReadPixels(new Rect(0f, 0f, width, height), 0, 0);
                 tex.Apply();
-                // Restore previous target rather than null — vanilla leaked
-                // the original target texture (see developer_notes/LoadManager.md).
                 mainCamera.targetTexture = prevTarget;
                 RenderTexture.active = null;
 
                 string path = folderPath + "screenshot.png";
                 byte[] png = tex.EncodeToPNG();
                 File.WriteAllBytes(path, png);
+
+                __result = tex;
+                tex = null; // prevent finally from destroying it
             }
             catch (Exception ex)
             {
-                PerfOptPlugin.Log.LogWarning($"[SAVE-SHOT] Capture/write failed: {ex.Message}");
+                LogError("SAVE-SHOT", "Capture failed", ex);
+                __result = null;
             }
             finally
             {
                 if (rt != null) UnityEngine.Object.Destroy(rt);
                 if (tex != null) UnityEngine.Object.Destroy(tex);
             }
+            return false;
         }
     }
 
@@ -107,7 +103,7 @@ namespace OstronautsPerfOpt
     // writes, and destroys the texture. Zero cost on the save frame.
 
     [HarmonyPatch]
-    public static class Patch_SaveCrewPortraits_Defer
+    public class Patch_SaveCrewPortraits_Defer : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -185,7 +181,7 @@ namespace OstronautsPerfOpt
     // call to GetFirstBOValue which uses Dictionary's struct enumerator (no alloc).
 
     [HarmonyPatch]
-    public static class Patch_UpdateShip_FirstBO_NoAlloc
+    public class Patch_UpdateShip_FirstBO_NoAlloc : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -203,12 +199,14 @@ namespace OstronautsPerfOpt
 
             for (int i = 0; i < codes.Count - 1; i++)
             {
-                if (codes[i].opcode == OpCodes.Call &&
+                if ((codes[i].opcode == OpCodes.Call || codes[i].opcode == OpCodes.Callvirt) &&
                     codes[i].operand is MethodInfo mi &&
                     mi.Name == "FirstOrDefault" &&
-                    mi.DeclaringType == typeof(Enumerable))
+                    mi.DeclaringType != null &&
+                    (mi.DeclaringType == typeof(Enumerable) ||
+                     mi.DeclaringType.FullName == "System.Linq.Enumerable"))
                 {
-                    if (codes[i + 1].opcode == OpCodes.Call &&
+                    if ((codes[i + 1].opcode == OpCodes.Call || codes[i + 1].opcode == OpCodes.Callvirt) &&
                         codes[i + 1].operand is MethodInfo mi2 &&
                         mi2.Name == "get_Value")
                     {
@@ -252,7 +250,7 @@ namespace OstronautsPerfOpt
     // sequence so no allocation occurs.
 
     [HarmonyPatch]
-    public static class Patch_UpdateManual_NoTickerLog
+    public class Patch_UpdateManual_NoTickerLog : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -324,7 +322,7 @@ namespace OstronautsPerfOpt
     // (which only batches null yields) passes it through immediately.
 
     [HarmonyPatch]
-    public static class Patch_StarInit_BatchShipSpawn
+    public class Patch_StarInit_BatchShipSpawn : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -337,14 +335,24 @@ namespace OstronautsPerfOpt
         static IEnumerator Postfix(IEnumerator result,
             JsonStarSystemSave objSystem, JsonShip[] aShips)
         {
-            if (result == null) return null;
+            if (result == null)
+            {
+                LogLoadPhase("BATCH-SPAWN", "StarSystem.Init enumerator was null");
+                return null;
+            }
             return BatchedInit(result, aShips);
         }
 
         private static IEnumerator BatchedInit(IEnumerator inner, JsonShip[] aShips)
         {
             int steps = 0;
+            int totalShips = 0;
             int shipCount = aShips?.Length ?? 0;
+            long phaseStart = Tick();
+            long memBefore = Mem();
+            int gcBefore = GCs();
+
+            LogLoadPhase("BATCH-SPAWN", $"Starting batched ship spawn: {shipCount} ships, batch size={ShipBatchSize}");
 
             while (inner.MoveNext())
             {
@@ -353,29 +361,31 @@ namespace OstronautsPerfOpt
 
                 if (yielded != null)
                 {
-                    // Non-null yield (progress bar update, yield return true, etc.)
-                    // Pass through immediately — reset batch counter so the next
-                    // batch of null yields starts fresh.
                     steps = 0;
                     yield return yielded;
                 }
                 else if (steps >= ShipBatchSize)
                 {
-                    // N ships processed — yield a non-null value so the outer
-                    // BatchedCoroutineLoad (which only batches null yields)
-                    // passes this through to Unity immediately.
+                    totalShips += steps;
                     steps = 0;
                     yield return true;
                 }
-                // else: null yield consumed by batching, continue without yielding
             }
 
-            // Progress bar: if we consumed the final yield, update it manually
+            totalShips += steps;
+
             if (shipCount > 0)
             {
-                LoadingScreen.SetProgressBar(
-                    LoadingScreen.GetProgress() + 0.01f, "Spawning System Ships (done)");
+                try
+                {
+                    LoadingScreen.SetProgressBar(
+                        LoadingScreen.GetProgress() + 0.01f, "Spawning System Ships (done)");
+                }
+                catch { }
             }
+
+            LogTimedMB("BATCH-SPAWN", $"Complete: {totalShips}/{shipCount} ships batched",
+                phaseStart, memBefore, gcBefore);
         }
     }
 
@@ -387,7 +397,7 @@ namespace OstronautsPerfOpt
     // does dictSettings["UserSettings"] lookup. Cache the int.
 
     [HarmonyPatch]
-    public static class Patch_Sparks_CacheFlicker
+    public class Patch_Sparks_CacheFlicker : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -431,7 +441,7 @@ namespace OstronautsPerfOpt
     // Patch: check the condition in Prefix and skip the method call entirely.
 
     [HarmonyPatch]
-    public static class Patch_DamageOverTime_Skip
+    public class Patch_DamageOverTime_Skip : PatchBase
     {
         static MethodBase TargetMethod()
         {

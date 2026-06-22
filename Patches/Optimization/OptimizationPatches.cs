@@ -24,7 +24,7 @@ namespace OstronautsPerfOpt
     // ========================================
 
     [HarmonyPatch]
-    public static class Patch_StarSystemUpdate_ToList
+    public class Patch_StarSystemUpdate_ToList : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -82,7 +82,7 @@ namespace OstronautsPerfOpt
     // ========================================
 
     [HarmonyPatch]
-    public static class Patch_CollisionManager_ToList
+    public class Patch_CollisionManager_ToList : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -171,7 +171,7 @@ namespace OstronautsPerfOpt
     // (now-cleaned) dict as __result. Avoids new dict + all copies.
 
     [HarmonyPatch]
-    public static class Patch_InteractionObjectTracker_RemoveNulls
+    public class Patch_InteractionObjectTracker_RemoveNulls : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -252,7 +252,7 @@ namespace OstronautsPerfOpt
     // running every frame.
 
     [HarmonyPatch]
-    public static class Patch_Ship_UpdateCrewSkills_NoAlloc
+    public class Patch_Ship_UpdateCrewSkills_NoAlloc : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -387,7 +387,7 @@ namespace OstronautsPerfOpt
     // Same pattern as our Patch_UpdateICOs_NoCopy for aTickersTemp.
 
     [HarmonyPatch]
-    public static class Patch_EndTurn_PreSizeCondsTemp
+    public class Patch_EndTurn_PreSizeCondsTemp : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -436,7 +436,7 @@ namespace OstronautsPerfOpt
     // (~40 bytes) but the List + array allocation is eliminated.
 
     [HarmonyPatch]
-    public static class Patch_CheckCollisions_DockedRegIDs
+    public class Patch_CheckCollisions_DockedRegIDs : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -514,7 +514,7 @@ namespace OstronautsPerfOpt
     // TLS lists (keys + messages). Zero Tuple + List allocations.
 
     [HarmonyPatch]
-    public static class Patch_DeliverMessages_NoAlloc
+    public class Patch_DeliverMessages_NoAlloc : PatchBase
     {
         static MethodBase TargetMethod()
         {

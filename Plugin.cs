@@ -201,6 +201,8 @@ namespace OstronautsPerfOpt
                 typeof(Patch_StarInit_ParallelShipSpawn),
                 typeof(Patch_ClaimTaskDirect_QueueStack),
                 typeof(Patch_AICancelAll_StackSkip)
+                // Patch_VisitCOs_Parallel disabled: visitors call Debug.Log/Debug.Break
+                // which are not thread-safe. Re-enable after adding suppression.
             };
 
             for (int i = 0; i < patches.Length; i++)
@@ -222,11 +224,10 @@ namespace OstronautsPerfOpt
             try
             {
                 LoadingProfiler.RegisterPatches(harmony);
-                Log.LogInfo("  [OK] LoadingProfiler patches registered");
             }
             catch (Exception ex)
             {
-                Log.LogWarning($"  [FAIL] LoadingProfiler: {ex.Message}");
+                Log.LogWarning($"  [FAIL] LoadingProfiler.RegisterPatches threw: {ex.GetType().Name}: {ex.Message}");
             }
 
             Log.LogInfo($"=== PerfOpt v5.0.0 ({ok}/{patches.Length} patches) ===");
@@ -268,6 +269,20 @@ namespace OstronautsPerfOpt
             _totalFrameMs += ms;
             if (ms > _worstFrameMs)
                 _worstFrameMs = ms;
+
+            // Rolling FPS window (always, even before GameLoaded)
+            _fpsWindow[_fpsWindowIdx] = ms;
+            _fpsWindowIdx = (_fpsWindowIdx + 1) % FpsWindowSize;
+            float total = 0f;
+            int count = 0;
+            float worst = 0f;
+            for (int i = 0; i < FpsWindowSize; i++)
+            {
+                float v = _fpsWindow[i];
+                if (v > 0f) { total += v; count++; if (v > worst) worst = v; }
+            }
+            _fpsDisplay = count > 0 ? 1000f / (total / count) : 60f;
+            _worstDisplay = worst;
 
             // Skip all profiling on main menu (no game loaded)
             if (!GameLoaded) return;
@@ -642,6 +657,12 @@ namespace OstronautsPerfOpt
             }
         }
 
+        // Rolling FPS window: track last 60 frames for stable display
+        private const int FpsWindowSize = 60;
+        private static readonly float[] _fpsWindow = new float[FpsWindowSize];
+        private static int _fpsWindowIdx;
+        private static float _fpsDisplay;
+        private static float _worstDisplay;
         private static float _fpsUpdateTimer;
         private static string _fpsLine = "";
         private static string _metricsText = "";
@@ -669,15 +690,13 @@ namespace OstronautsPerfOpt
                 _bgTex.Apply();
             }
 
-            // Update FPS line every 0.25s (separate from metrics which update every 5s)
+            // Update FPS line every 0.25s from rolling window (calculated in LateUpdate)
             _fpsUpdateTimer += Time.unscaledDeltaTime;
             if (_fpsUpdateTimer >= 0.25f)
             {
                 _fpsUpdateTimer = 0f;
-                float fps = _frameCount > 0 ? 1000f / (_totalFrameMs / _frameCount) : 0;
-                float worst = _worstFrameMs;
                 long mem = GC.GetTotalMemory(false) / (1024 * 1024);
-                _fpsLine = $"FPS:{fps:F0}  Worst:{worst:F0}ms  M:{mem}MB  Sim:{SimStepsThisFrame}";
+                _fpsLine = $"FPS:{_fpsDisplay:F0}  Worst:{_worstDisplay:F0}ms  M:{mem}MB  Sim:{SimStepsThisFrame}";
             }
 
             // Combine FPS line + metrics into one display string

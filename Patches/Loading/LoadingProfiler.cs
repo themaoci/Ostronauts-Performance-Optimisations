@@ -47,94 +47,85 @@ namespace OstronautsPerfOpt
 
         internal static void RegisterPatches(HarmonyLib.Harmony harmony)
         {
+            int ok = 0, fail = 0;
+
+            void TryPatch(string name, MethodBase target, HarmonyMethod prefix, HarmonyMethod postfix)
+            {
+                if (target == null)
+                {
+                    PerfOptPlugin.Log.LogWarning($"[LOAD-PROF] {name}: target NOT FOUND");
+                    fail++;
+                    return;
+                }
+                try
+                {
+                    harmony.Patch(target, prefix, postfix);
+                    ok++;
+                    PerfOptPlugin.Log.LogInfo($"[LOAD-PROF] Patched {name}");
+                }
+                catch (Exception ex)
+                {
+                    fail++;
+                    PerfOptPlugin.Log.LogWarning($"[LOAD-PROF] {name}: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
             var phasePre = new HarmonyMethod(AccessTools.Method(
                 typeof(LoadingProfilerPatches), "Phase_Pre"));
 
-            var starInit = AccessTools.Method(typeof(StarSystem), "Init",
-                new[] { typeof(JsonStarSystemSave), typeof(JsonShip[]) });
-            if (starInit != null)
-            {
-                harmony.Patch(starInit, phasePre,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "StarInit_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched StarSystem.Init");
-            }
-            else
-                PerfOptPlugin.Log.LogWarning("[LOAD-PROF] StarSystem.Init NOT FOUND");
+            TryPatch("StarSystem.Init",
+                AccessTools.Method(typeof(StarSystem), "Init",
+                    new[] { typeof(JsonStarSystemSave), typeof(JsonShip[]) }),
+                phasePre,
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "StarInit_Post")));
 
-            var initShip = AccessTools.Method(typeof(Ship), "InitShip",
-                new[] { typeof(bool), typeof(Ship.Loaded), typeof(string) });
-            if (initShip != null)
-            {
-                harmony.Patch(initShip,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "InitShip_Pre")),
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "InitShip_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched Ship.InitShip");
-            }
-            else
-                PerfOptPlugin.Log.LogWarning("[LOAD-PROF] Ship.InitShip NOT FOUND");
+            TryPatch("Ship.InitShip",
+                AccessTools.Method(typeof(Ship), "InitShip",
+                    new[] { typeof(bool), typeof(Ship.Loaded), typeof(string) }),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "InitShip_Pre")),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "InitShip_Post")));
 
-            var visitCOs = AccessTools.Method(typeof(Ship), "VisitCOs",
-                new[] { typeof(CondOwnerVisitor), typeof(bool), typeof(bool), typeof(bool) });
-            if (visitCOs != null)
-            {
-                harmony.Patch(visitCOs, phasePre,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "VisitCOs_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched Ship.VisitCOs");
-            }
-            else
-                PerfOptPlugin.Log.LogWarning("[LOAD-PROF] Ship.VisitCOs NOT FOUND");
+            TryPatch("Ship.VisitCOs",
+                AccessTools.Method(typeof(Ship), "VisitCOs",
+                    new[] { typeof(CondOwnerVisitor), typeof(bool), typeof(bool), typeof(bool) }),
+                phasePre,
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "VisitCOs_Post")));
 
-            var updateICOs = AccessTools.Method(typeof(CrewSim), "UpdateICOs");
-            if (updateICOs != null)
-            {
-                harmony.Patch(updateICOs, phasePre,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "UpdateICOs_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched CrewSim.UpdateICOs");
-            }
-            else
-                PerfOptPlugin.Log.LogWarning("[LOAD-PROF] CrewSim.UpdateICOs NOT FOUND");
+            TryPatch("CrewSim.UpdateICOs",
+                AccessTools.Method(typeof(CrewSim), "UpdateICOs"),
+                phasePre,
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "UpdateICOs_Post")));
 
-            var loadSave1 = AccessTools.Method(typeof(DataHandler), "LoadSaveFile",
-                new[] { typeof(string) });
-            if (loadSave1 != null)
-            {
-                harmony.Patch(loadSave1,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Pre")),
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched LoadSaveFile(string)");
-            }
+            TryPatch("LoadSaveFile(string)",
+                AccessTools.Method(typeof(DataHandler), "LoadSaveFile",
+                    new[] { typeof(string) }),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Pre")),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Post")));
 
-            var loadSave2 = AccessTools.Method(typeof(DataHandler), "LoadSaveFile",
-                new[] { typeof(string), typeof(Dictionary<string, byte[]>) });
-            if (loadSave2 != null)
-            {
-                harmony.Patch(loadSave2,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Pre")),
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched LoadSaveFile(string, Dict<byte>)");
-            }
+            TryPatch("LoadSaveFile(string, Dict<byte>)",
+                AccessTools.Method(typeof(DataHandler), "LoadSaveFile",
+                    new[] { typeof(string), typeof(Dictionary<string, byte[]>) }),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Pre")),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Post")));
 
             var jsonToData2 = typeof(DataHandler).GetMethods()
                 .Where(m => m.Name == "JsonToData" && m.IsGenericMethod && m.GetParameters().Length == 2)
                 .FirstOrDefault();
-            if (jsonToData2 != null)
-            {
-                harmony.Patch(jsonToData2,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Pre")),
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched JsonToData<T>(string, Dict<T>)");
-            }
+            TryPatch("JsonToData<T>(string, Dict<T>)",
+                jsonToData2,
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Pre")),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Post")));
 
             var jsonToData3 = typeof(DataHandler).GetMethods()
                 .Where(m => m.Name == "JsonToData" && m.IsGenericMethod && m.GetParameters().Length == 3)
                 .FirstOrDefault();
-            if (jsonToData3 != null)
-            {
-                harmony.Patch(jsonToData3,
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Pre")),
-                    new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData3_Post")));
-                PerfOptPlugin.Log.LogInfo("[LOAD-PROF] Patched JsonToData<T>(string, Dict<T>, Dict<byte>)");
-            }
+            TryPatch("JsonToData<T>(string, Dict<T>, Dict<byte>)",
+                jsonToData3,
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Pre")),
+                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData3_Post")));
+
+            if (fail > 0)
+                PerfOptPlugin.Log.LogInfo($"[LOAD-PROF] {ok} ok, {fail} failed");
         }
 
         internal static void Record(string phase, string detail, long ms, long allocKB, int gcDelta)
@@ -208,6 +199,7 @@ namespace OstronautsPerfOpt
         [ThreadStatic] internal static long CurStart;
         [ThreadStatic] internal static long CurMemBefore;
         [ThreadStatic] internal static int CurGcBefore;
+        [ThreadStatic] internal static string CurJsonType;
 
         internal static void Phase_Pre()
         {
@@ -265,26 +257,23 @@ namespace OstronautsPerfOpt
             CurStart = Stopwatch.GetTimestamp();
             CurMemBefore = GC.GetTotalMemory(false);
             CurGcBefore = GC.CollectionCount(0);
+            // Type name unavailable from Harmony prefix (IL Compile Error
+            // with __originalMethod on generic methods). Use "?" placeholder.
+            CurJsonType = "?";
         }
 
-        internal static void JsonToData_Post(MethodBase __originalMethod)
+        internal static void JsonToData_Post()
         {
             long ms = (Stopwatch.GetTimestamp() - CurStart) * 1000 / Stopwatch.Frequency;
             long allocKB = (GC.GetTotalMemory(false) - CurMemBefore) / 1024;
             int gcDelta = GC.CollectionCount(0) - CurGcBefore;
-            string type = "?";
-            if (__originalMethod != null)
-            {
-                type = __originalMethod.IsGenericMethod
-                    ? __originalMethod.GetGenericArguments().FirstOrDefault()?.Name ?? "?"
-                    : "?";
-            }
+            string type = CurJsonType ?? "?";
             LoadingProfiler.Record($"JsonToData<{type}>", CurDetail, ms, allocKB, gcDelta);
         }
 
-        internal static void JsonToData3_Post(MethodBase __originalMethod)
+        internal static void JsonToData3_Post()
         {
-            JsonToData_Post(__originalMethod);
+            JsonToData_Post();
         }
 
         internal static void LoadSaveFile_Pre(string strFileName)

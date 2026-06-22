@@ -31,7 +31,7 @@ namespace OstronautsPerfOpt
     // is needed. Stack stays balanced in both the open and not-open paths.
 
     [HarmonyPatch]
-    public static class Patch_InstallStart_KeepInventoryOpen
+    public class Patch_InstallStart_KeepInventoryOpen : PatchBase
     {
         static MethodBase TargetMethod()
         {
@@ -94,7 +94,7 @@ namespace OstronautsPerfOpt
     // a task is in progress.
 
     [HarmonyPatch]
-    public static class Patch_GetAvailActions_KeepClickable
+    public class Patch_GetAvailActions_KeepClickable : PatchBase
     {
         static MethodBase TargetMethod()
         {
