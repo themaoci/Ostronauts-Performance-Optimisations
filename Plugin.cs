@@ -17,7 +17,7 @@ using System.Threading;
 namespace OstronautsPerfOpt
 {
     [BepInPlugin("com.ostronauts.perfopt",
-        "Ostronauts Performance Optimizer", "5.0.0")]
+        "Ostronauts Performance Optimizer", "5.2.0")]
     public class PerfOptPlugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -232,7 +232,7 @@ namespace OstronautsPerfOpt
                 Log.LogWarning($"  [FAIL] LoadingProfiler.RegisterPatches threw: {ex.GetType().Name}: {ex.Message}");
             }
 
-            Log.LogInfo($"=== PerfOpt v5.0.0 ({ok}/{patches.Length} patches) ===");
+            Log.LogInfo($"=== PerfOpt v5.2.0 ({ok}/{patches.Length} patches) ===");
             int disabled = patches.Length - ok;
             if (disabled > 0)
                 Log.LogInfo($"  {ok} patches active, {disabled} disabled (SuppressInteractionLog, GetMove2_Cache)");
