@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 """
 Ostronauts PerfOpt Release Script
-Usage: py release.py <version> [changelog_file]
+Usage: py push_release_to_git.py <version> [changelog_file]
 
-If changelog_file is omitted, looks for CHANGELOG_<version>.md
+If changelog_file is omitted, looks for changelog/CHANGELOG_<version>.md
 
 Example:
-  py release.py v5.2.0
-  py release.py v5.2.0 CHANGELOG_v5.2.0.md
+  py push_release_to_git.py v5.2.0
+  py push_release_to_git.py v5.2.0 changelog/CHANGELOG_v5.2.0.md
 """
 
 import os
 import sys
 import re
 import subprocess
-import json
 from pathlib import Path
 
 REPO_DIR = Path(__file__).parent.resolve()
-CSPROJ = REPO_DIR / "OstronautsPerfOpt.csproj"
 PLUGIN_CS = REPO_DIR / "Plugin.cs"
 BIN_DIR = REPO_DIR / "bin" / "Release" / "netstandard2.1"
 DLL_NAME = "OstronautsPerfOpt.dll"
@@ -39,11 +37,11 @@ def ok(msg):
 
 def check_dependencies():
     missing = []
-    if not subprocess.run(["where", "dotnet"], capture_output=True, silent=True).returncode == 0:
+    if subprocess.run(["where", "dotnet"], capture_output=True).returncode != 0:
         missing.append("dotnet (install .NET SDK)")
-    if not subprocess.run(["where", "gh"], capture_output=True, silent=True).returncode == 0:
+    if subprocess.run(["where", "gh"], capture_output=True).returncode != 0:
         missing.append("gh (install GitHub CLI)")
-    if not subprocess.run(["gh", "auth", "status"], capture_output=True, silent=True).returncode == 0:
+    if subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
         missing.append("gh not authenticated (run: gh auth login)")
     if missing:
         fail("Missing dependencies:\n  " + "\n  ".join(missing))
@@ -61,8 +59,7 @@ def read_current_version():
 def validate_version(version):
     if not re.match(r'^v?\d+\.\d+\.\d+$', version):
         fail(f"Version must be in format vX.Y.Z or X.Y.Z, got: {version}")
-    version = version.lstrip("v")
-    return version
+    return version.lstrip("v")
 
 
 def find_changelog(version, cl_file):
@@ -72,26 +69,35 @@ def find_changelog(version, cl_file):
             fail(f"Changelog file not found: {path}")
         return path
     candidates = [
-        REPO_DIR / f"CHANGELOG_v{version}.md",
-        REPO_DIR / f"CHANGELOG_{version}.md",
-        REPO_DIR / "CHANGELOG.md",
+        REPO_DIR / "changelog" / f"CHANGELOG_v{version}.md",
+        REPO_DIR / "changelog" / f"CHANGELOG_{version}.md",
+        REPO_DIR / "changelog" / "CHANGELOG.md",
     ]
     for c in candidates:
         if c.exists():
             return c
-    fail(f"No changelog found. Create CHANGELOG_v{version}.md or pass a filename.")
+    fail(f"No changelog found in changelog/. Create changelog/CHANGELOG_v{version}.md or pass a filename.")
 
 
 def check_git_clean():
     r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=REPO_DIR)
     if r.stdout.strip():
-        print("[WARN] Uncommitted changes:")
+        print("[FAIL] Uncommitted changes detected. Commit all code first before releasing:")
         for line in r.stdout.strip().split("\n"):
             print(f"       {line}")
-        ans = input("       Continue anyway? [y/N] ").strip().lower()
-        if ans != "y":
-            sys.exit(0)
-    ok("Git working tree clean (or confirmed)")
+        sys.exit(1)
+    ok("Git working tree clean")
+
+
+def git_push():
+    step("Pushing commits and tags to remote...")
+    r = subprocess.run(["git", "push"], capture_output=True, text=True, cwd=REPO_DIR)
+    if r.returncode != 0:
+        fail(f"git push failed:\n{r.stderr}")
+    r2 = subprocess.run(["git", "push", "--tags"], capture_output=True, text=True, cwd=REPO_DIR)
+    if r2.returncode != 0:
+        fail(f"git push --tags failed:\n{r2.stderr}")
+    ok("Pushed to remote")
 
 
 def build():
@@ -101,7 +107,6 @@ def build():
         capture_output=True, text=True, cwd=REPO_DIR
     )
     if r.returncode != 0:
-        # Check if only deploy errors (DLL locked by game)
         errors = [l for l in r.stderr.split("\n") if "error" in l.lower()]
         deploy_errors = [l for l in errors if "MSB302" in l]
         other_errors = [l for l in errors if "MSB302" not in l]
@@ -127,15 +132,8 @@ def create_tag(version):
     r = subprocess.run(["git", "tag", tag], capture_output=True, text=True, cwd=REPO_DIR)
     if r.returncode != 0:
         if "already exists" in r.stderr:
-            print(f"[WARN] Tag {tag} already exists")
-            ans = input("       Overwrite? [y/N] ").strip().lower()
-            if ans == "y":
-                subprocess.run(["git", "tag", "-d", tag], cwd=REPO_DIR)
-                subprocess.run(["git", "tag", tag], cwd=REPO_DIR)
-            else:
-                sys.exit(0)
-        else:
-            fail(f"Failed to create tag: {r.stderr}")
+            fail(f"Tag {tag} already exists. Delete it first: git tag -d {tag} && git push --delete origin {tag}")
+        fail(f"Failed to create tag: {r.stderr}")
     ok(f"Tag {tag} created")
 
 
@@ -170,10 +168,7 @@ def main():
     print(f"  Current version in Plugin.cs: {current}")
     print(f"  Requested version:             {version}")
     if version != current:
-        print(f"[WARN] Version mismatch! Plugin.cs has {current}, you requested {version}")
-        ans = input("       Continue anyway? [y/N] ").strip().lower()
-        if ans != "y":
-            sys.exit(0)
+        fail(f"Version mismatch! Plugin.cs has {current}, you requested {version}. Update Plugin.cs first.")
 
     changelog_path = find_changelog(version, cl_file)
     print(f"  Changelog: {changelog_path}")
@@ -181,6 +176,7 @@ def main():
     check_git_clean()
     dll_path = build()
     create_tag(version)
+    git_push()
     create_release(version, changelog_path, dll_path)
 
     print("\n=== Release complete! ===")
