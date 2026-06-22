@@ -108,21 +108,8 @@ namespace OstronautsPerfOpt
                 new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Pre")),
                 new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "LoadSaveFile_Post")));
 
-            var jsonToData2 = typeof(DataHandler).GetMethods()
-                .Where(m => m.Name == "JsonToData" && m.IsGenericMethod && m.GetParameters().Length == 2)
-                .FirstOrDefault();
-            TryPatch("JsonToData<T>(string, Dict<T>)",
-                jsonToData2,
-                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Pre")),
-                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Post")));
-
-            var jsonToData3 = typeof(DataHandler).GetMethods()
-                .Where(m => m.Name == "JsonToData" && m.IsGenericMethod && m.GetParameters().Length == 3)
-                .FirstOrDefault();
-            TryPatch("JsonToData<T>(string, Dict<T>, Dict<byte>)",
-                jsonToData3,
-                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData_Pre")),
-                new HarmonyMethod(AccessTools.Method(typeof(LoadingProfilerPatches), "JsonToData3_Post")));
+            // JsonToData patches removed — HarmonyMethod with __originalMethod
+            // causes IL Compile Error on generic methods. Minor profiling loss.
 
             if (fail > 0)
                 PerfOptPlugin.Log.LogInfo($"[LOAD-PROF] {ok} ok, {fail} failed");

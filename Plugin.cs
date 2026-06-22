@@ -183,7 +183,7 @@ namespace OstronautsPerfOpt
                 typeof(Patch_SaveCrewPortraits_Defer),
                 typeof(Patch_Sparks_CacheFlicker),
                 typeof(Patch_DamageOverTime_Skip),
-                typeof(Patch_UpdateShip_FirstBO_NoAlloc),
+                // typeof(Patch_UpdateShip_FirstBO_NoAlloc), // removed — IL Compile Error, minor perf gain
                 typeof(Patch_UpdateManual_NoTickerLog),
                 typeof(Patch_InstallStart_KeepInventoryOpen),
                 typeof(Patch_GetAvailActions_KeepClickable),
