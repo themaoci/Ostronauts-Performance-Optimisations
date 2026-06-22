@@ -201,7 +201,8 @@ namespace OstronautsPerfOpt
                 typeof(Patch_StarInit_ParallelShipSpawn),
                 typeof(Patch_ClaimTaskDirect_QueueStack),
                 typeof(Patch_AICancelAll_StackSkip),
-                typeof(Patch_GetControllerType_Cache)
+                typeof(Patch_GetControllerType_Cache),
+                typeof(Patch_SetFPS_Fix)
                 // Patch_VisitCOs_Parallel disabled: visitors call Debug.Log/Debug.Break
                 // which are not thread-safe. Re-enable after adding suppression.
             };

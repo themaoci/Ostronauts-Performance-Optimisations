@@ -2,6 +2,7 @@ using System;
 using System.Reflection;
 using HarmonyLib;
 using Steamworks;
+using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.DualShock;
 using Ostranauts.InputControl;
@@ -78,6 +79,48 @@ namespace OstronautsPerfOpt
             }
             __result = "xbox_";
             return false;
+        }
+    }
+
+    // ========================================
+    // FPS LOCK FIX — game's SetFPS multiplies slider value by 10
+    // ========================================
+    // Vanilla GUIOptions.SetFPS(float fps) does:
+    //     int num = (int)fps * 10;
+    //     Application.targetFrameRate = num;
+    // So setting the slider to 60 gives targetFrameRate = 600, not 60.
+    // This is a game bug — the *10 was likely meant for a 0-10 slider
+    // range but the slider goes 0-100.
+    //
+    // Fix: Prefix that corrects the multiplication. The slider value is
+    // already in FPS (0-100), so just cast directly.
+
+    [HarmonyPatch]
+    public class Patch_SetFPS_Fix : PatchBase
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(GUIOptions), "SetFPS");
+        }
+
+        static bool Prefix(float fps)
+        {
+            int target = (int)fps;
+            if (fps == 16f)
+            {
+                // "Unlimited" option — set to 1000 as vanilla intended
+                target = 1000;
+            }
+            else
+            {
+                // Clamp to reasonable range
+                if (target < 15) target = 15;
+                if (target > 1000) target = 1000;
+            }
+
+            PlayerPrefs.SetInt("TargetFPS", target);
+            Application.targetFrameRate = target;
+            return false; // skip original
         }
     }
 }
