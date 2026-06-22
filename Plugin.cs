@@ -202,7 +202,8 @@ namespace OstronautsPerfOpt
                 // typeof(Patch_ClaimTaskDirect_QueueStack), // disabled — movement still queued incorrectly
                 // typeof(Patch_AICancelAll_StackSkip),
                 typeof(Patch_GetControllerType_Cache),
-                typeof(Patch_SetFPS_Fix)
+                typeof(Patch_SetFPS_Fix),
+                typeof(Patch_StateReset)
                 // Patch_VisitCOs_Parallel disabled: visitors call Debug.Log/Debug.Break
                 // which are not thread-safe. Re-enable after adding suppression.
             };
